@@ -1,0 +1,31 @@
+# 1. 의존성 폴더 (pnpm)
+# pnpm install 로 언제든 다시 받을 수 있으므로 절대 올리지 않습니다.
+node_modules/
+
+# 2. pnpm 및 Node.js 로그 파일
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# 3. 🚨 환경 변수 및 시크릿 키 (가장 중요!)
+# KIS API 키와 텔레그램 토큰이 들어있으므로 해킹 방지를 위해 완벽히 차단합니다.
+.env
+.env.local
+.env.development
+.env.production
+
+# 4. 🤖 봇 상태 및 캐시 데이터
+# 서버에서 실시간으로 변하는 파일들이므로 Git으로 덮어씌워지면 안 됩니다.
+watchlist.json
+*.bak_* # watchlist.json 파싱 에러 시 생성되는 백업 파일
+token.json        # KIS API 토큰 캐시 파일 (이름을 다르게 하셨다면 그 이름을 적어주세요)
+
+# 5. OS 및 에디터 찌꺼기 파일
+.DS_Store
+.vscode/
+.idea/
+
+# 6. PM2 프로세스 로그
+logs/
+*.log
