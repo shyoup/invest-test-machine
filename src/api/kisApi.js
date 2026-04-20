@@ -43,13 +43,22 @@ const getCurrentPrice = async (ticker, market = 'KR') => {
  */
 // src/api/kisApi.js 내부 수정
 
+// 💡 KIS 전용 에러 메시지 추출 헬퍼 함수
+const getKisErrorMsg = (err) => {
+  if (err.response && err.response.data) {
+    const { msg_cd, msg1 } = err.response.data;
+    if (msg_cd || msg1) return `[${msg_cd || '코드없음'}] ${msg1 || '메시지없음'}`;
+  }
+  return err.message; // KIS 규격이 아니면 일반 에러 메시지 반환
+};
+
 const getHistoricalData = async (ticker, market = 'KR') => {
   const token = await getValidToken();
   const isKR = market === 'KR';
 
   try {
     if (isKR) {
-      // 🇰🇷 국장 로직 (변경 없음)
+      // 🇰🇷 국장 로직
       const url = `${DOMAIN}/uapi/domestic-stock/v1/quotations/inquire-daily-price`;
       const config = {
         headers: {
@@ -63,12 +72,13 @@ const getHistoricalData = async (ticker, market = 'KR') => {
       };
       const response = await axios.get(url, config);
       if (!response.data.output || response.data.output.length === 0) throw new Error('데이터 없음');
+
       return response.data.output.map(item => ({
         date: item.stck_bsop_date, close: Number(item.stck_clpr), high: Number(item.stck_hgpr), low: Number(item.stck_lwpr)
       }));
 
     } else {
-      // 🇺🇸 미장 로직 (500 에러 방어 및 순차 탐색)
+      // 🇺🇸 미장 로직
       const url = `${DOMAIN}/uapi/overseas-price/v1/quotations/dailyprice`;
 
       const fetchUsData = async (excd) => {
@@ -80,9 +90,8 @@ const getHistoricalData = async (ticker, market = 'KR') => {
               appkey: APP_KEY,
               appsecret: APP_SECRET,
               tr_id: 'FHKST03030100',
-              custtype: 'P' // 개인회원 명시 (API 안정성 확보)
+              custtype: 'P'
             },
-            // 💡 AUTH 등 필수 빈 문자열 파라미터 추가
             params: { AUTH: '', EXCD: excd, SYMB: ticker, GUBN: '0', BYMD: '', MODP: '1' },
           };
           const res = await axios.get(url, config);
@@ -92,30 +101,28 @@ const getHistoricalData = async (ticker, market = 'KR') => {
           }
           return null;
         } catch (err) {
-          // 💡 핵심: 거래소가 틀려서 500 에러가 나도 함수를 터뜨리지 않고 null을 반환
+          // 💡 에러 발생 시 KIS의 진짜 속마음을 로그에 남김
+          const kisErrMsg = getKisErrorMsg(err);
+          console.log(`⚠️ [US][${ticker}] ${excd} 탐색 실패 사유: ${kisErrMsg}`);
           return null;
         }
       };
 
-      // 1. 나스닥(NAS)으로 먼저 찔러봄
       let rawData = await fetchUsData('NAS');
-
-      // 2. 실패(500 에러 포함) 시 뉴욕거래소(NYS)로 다시 찔러봄
       if (!rawData) rawData = await fetchUsData('NYS');
-
-      // 3. 그래도 안 되면 아멕스(AMS)로 찔러봄
       if (!rawData) rawData = await fetchUsData('AMS');
 
-      // 3곳 다 찔렀는데 없으면 진짜 없는 종목
-      if (!rawData) throw new Error('미장 거래소(NAS/NYS/AMS)에서 데이터를 찾을 수 없습니다.');
+      if (!rawData) throw new Error('미장 거래소(NAS/NYS/AMS) 전체 탐색 실패 (로그 확인 요망)');
 
       return rawData.map(item => ({
         date: item.xymd, close: Number(item.clos), high: Number(item.high), low: Number(item.low)
       }));
     }
   } catch (error) {
-    console.error(`❌ [${market}][${ticker}] 과거 데이터 실패:`, error.message);
-    throw error;
+    // 💡 최종 에러 출력도 KIS 에러 규격으로 변경
+    const finalErrMsg = getKisErrorMsg(error);
+    console.error(`❌ [${market}][${ticker}] 과거 데이터 API 에러: ${finalErrMsg}`);
+    throw new Error(finalErrMsg);
   }
 };
 
