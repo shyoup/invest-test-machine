@@ -26,79 +26,76 @@ const runScanner = async (market) => {
     }
 
     // 💡 [핵심 방어막] 스캔 시작 전, 현재 내 계좌에 있는 종목들을 싹 가져옵니다.
-    const currentHoldings = await getCurrentHoldings(market);
-    console.log(`💼 현재 [${market}] 보유 종목: ${currentHoldings.length > 0 ? currentHoldings.join(', ') : '없음'}`);
-
-    let hasSignal = false;
-    let reportMsg = `🤖 [${market} 알고리즘 스캔 결과]\n\n`;
+    const holdingsMap = await getCurrentHoldings(market);
+    console.log(`💼 현재 [${market}] 보유 종목 수: ${Object.keys(holdingsMap).length}개`);
 
     for (const [ticker, weight] of Object.entries(marketWatchlist)) {
-      console.log(`\n🔍 [${market}] ${ticker} (설정비중: ${weight}%) 분석 중...`);
-
       try {
         const ohlcvData = await getHistoricalData(ticker, market);
         const signal = analyzeSignal(ohlcvData);
 
         if (signal !== 'HOLD') {
           const currentPrice = await getCurrentPrice(ticker, market);
-          let orderInfoText = '';
-          let isExecute = false; // 실제 주문을 넣을지 결정하는 플래그
+          const currency = market === 'KR' ? '원' : '달러';
+          const priceStr = currentPrice.toLocaleString() + currency;
 
+          // 📢 1. 조건에 들어온 관심 종목 보고
+          const directionTxt = signal === 'BUY' ? '🟢 매수' : '🔴 매도';
+          await sendMessage(`🔍 <b>[시그널 포착]</b>\n- 종목: <code>${ticker}</code>\n- 방향: ${directionTxt}\n- 현재가: ${priceStr}`);
+
+          // 🛒 매수 프로세스
           if (signal === 'BUY') {
-            // 🛡️ 중복 매수 방어 로직
-            if (currentHoldings.includes(ticker)) {
-              orderInfoText = `\n  - 🛡️ 방어 로직 작동: 이미 보유 중인 종목이므로 추가 매수를 패스합니다.`;
-              console.log(`[PASS] ${ticker} 이미 보유 중`);
-            } else {
-              // 보유하고 있지 않다면 정상적으로 매수 프로세스 진행
-              const availableCash = await getAvailableCash(market);
-              const targetAmount = Math.floor(availableCash * (weight / 100));
-              const targetQuantity = Math.floor(targetAmount / currentPrice);
-              const currency = market === 'KR' ? '원' : '달러';
-
-              orderInfoText = `\n  - 💰 가용 현금: ${availableCash.toLocaleString()}${currency}` +
-                `\n  - 🎯 투자 비중: ${weight}% (${targetAmount.toLocaleString()}${currency})` +
-                `\n  - 🛒 매수 목표 수량: ${targetQuantity}주`;
-
-              if (targetQuantity > 0) {
-                isExecute = true; // 주문 실행 승인!
-              } else {
-                orderInfoText += `\n  - ⚠️ 주문 보류: 현금 부족 (1주 미만)`;
-              }
+            if (holdingsMap[ticker]) {
+              await sendMessage(`🛡️ <b>[매수 보류]</b> 이미 보유 중인 종목입니다. (중복 매수 방지)`);
+              continue;
             }
-          } else if (signal === 'SELL') {
-            // 🛡️ 공매도(없는 주식 팔기) 방어 로직
-            if (!currentHoldings.includes(ticker)) {
-              orderInfoText = `\n  - 🛡️ 방어 로직 작동: 보유하고 있지 않은 종목이므로 매도를 패스합니다.`;
+
+            const availableCash = await getAvailableCash(market);
+            const targetAmount = Math.floor(availableCash * (weight / 100));
+            const targetQuantity = Math.floor(targetAmount / currentPrice);
+
+            if (targetQuantity > 0) {
+              try {
+                // 매수 API 발사!
+                await executeOrder(ticker, targetQuantity, currentPrice, market, 'BUY');
+
+                // 📢 2. 매수 성공 보고
+                await sendMessage(`✅ <b>[매수 체결 완료]</b>\n- 종목: <code>${ticker}</code>\n- 주문수량: ${targetQuantity}주\n- 소요금액: 약 ${targetAmount.toLocaleString()}${currency}\n- 설정비중: ${weight}%`);
+              } catch (err) {
+                // 📢 2. 매수 실패 보고
+                await sendMessage(`❌ <b>[매수 주문 실패]</b>\n- 종목: <code>${ticker}</code>\n- 사유: <code>${err.message}</code>`);
+              }
             } else {
-              orderInfoText = `\n  - 🛒 매도 시그널 감지 (수동 매도 요망 또는 추후 매도 로직 연동 필요)`;
-              // 💡 매도 주문 로직은 나중에 executeOrder(ticker, 매도수량, currentPrice, market, 'SELL') 로 연결할 수 있습니다.
+              await sendMessage(`⚠️ <b>[매수 보류]</b> 가용 현금 부족 (목표: ${targetAmount.toLocaleString()}${currency} / 현재가: ${priceStr})`);
             }
           }
 
-          const icon = signal === 'BUY' ? '🟢 매수' : '🔴 매도';
-          reportMsg += `${icon} 시그널: ${ticker} (현재가: ${currentPrice})${orderInfoText}\n\n`;
-          hasSignal = true;
+          // 🛒 매도 프로세스
+          else if (signal === 'SELL') {
+            const holdingQty = holdingsMap[ticker];
 
-          // 승인된 주문만 실제로 발사!
-          if (isExecute) {
+            if (!holdingQty) {
+              await sendMessage(`🛡️ <b>[매도 보류]</b> 현재 보유하고 있지 않은 종목입니다. (공매도 방지)`);
+              continue;
+            }
+
             try {
-              // 앞에서 계산한 targetQuantity를 넘겨주기 위해 변수 스코프를 위로 빼거나 다시 계산 (여기선 편의상 생략된 부분을 채워주세요)
-              const availableCash = await getAvailableCash(market);
-              const targetQuantity = Math.floor((availableCash * (weight / 100)) / currentPrice);
+              // 매도 API 발사 (전량 청산)
+              await executeOrder(ticker, holdingQty, currentPrice, market, 'SELL');
 
-              await executeOrder(ticker, targetQuantity, currentPrice, market, 'BUY');
-              reportMsg += `  - 🚀 주문 상태: 성공 (체결 대기)\n`;
-            } catch (orderErr) {
-              reportMsg += `  - ❌ 주문 실패: ${orderErr.message}\n`;
+              // 📢 3. 매도 성공 보고
+              await sendMessage(`✅ <b>[매도 체결 완료]</b>\n- 종목: <code>${ticker}</code>\n- 매도수량: ${holdingQty}주 (전량)\n- 체결단가: ${priceStr}`);
+            } catch (err) {
+              // 📢 3. 매도 실패 보고
+              await sendMessage(`❌ <b>[매도 주문 실패]</b>\n- 종목: <code>${ticker}</code>\n- 사유: <code>${err.message}</code>`);
             }
           }
         }
       } catch (error) {
-        console.error(`❌ [${ticker}] 에러:`, error.message);
+        console.error(`❌ [${ticker}] 분석 중 에러:`, error.message);
       }
 
-      await sleep(1000);
+      await sleep(1000); // 1초 대기 (API Rate Limit 방어)
     }
 
     if (hasSignal) {

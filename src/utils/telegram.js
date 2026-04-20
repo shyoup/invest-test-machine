@@ -14,16 +14,14 @@ if (token) {
   console.log('📡 텔레그램 Admin 수신 대기 중...');
 }
 
-// 기존의 알림 전송 함수 (유지)
-const sendMessage = async (message) => {
-  if (!bot || !myChatId) return;
+// 💡 알림 전송 함수 (HTML 모드 적용)
+const sendMessage = async (text) => {
   try {
-    await bot.sendMessage(myChatId, message);
-  } catch (error) {
-    console.error('텔레그램 전송 실패:', error.message);
+    await bot.sendMessage(myChatId, text, { parse_mode: 'HTML' });
+  } catch (err) {
+    console.error('텔레그램 전송 실패:', err.message);
   }
 };
-
 // ==========================================
 // 💡 Admin 명령어 처리 로직 (양방향)
 // ==========================================

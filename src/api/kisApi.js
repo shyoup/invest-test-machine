@@ -244,8 +244,8 @@ const executeOrder = async (ticker, quantity, price, market = 'KR', side = 'BUY'
 };
 
 /**
- * 5. 현재 보유 종목 조회 (국내/해외 통합 - 모의투자)
- * @returns {Array} 현재 보유 중인 종목코드 배열 ['005930', 'AAPL', ...]
+ * 5. 현재 보유 종목 및 수량 조회 (국내/해외 통합 - 모의투자)
+ * @returns {Object} { '종목코드': 보유수량 } 형태의 객체 반환
  */
 const getCurrentHoldings = async (market = 'KR') => {
   const token = await getValidToken();
@@ -260,6 +260,7 @@ const getCurrentHoldings = async (market = 'KR') => {
       ? `${DOMAIN}/uapi/domestic-stock/v1/trading/inquire-balance`
       : `${DOMAIN}/uapi/overseas-stock/v1/trading/inquire-balance`;
 
+    // (config 부분은 기존과 100% 동일하므로 생략 없이 기존 코드 유지)
     const config = {
       headers: {
         'content-type': 'application/json',
@@ -269,44 +270,30 @@ const getCurrentHoldings = async (market = 'KR') => {
         tr_id: trId,
       },
       params: isKR
-        ? {
-          CANO,
-          ACNT_PRDT_CD,
-          AFHR_FLPR_YN: 'N',
-          OFL_YN: '',
-          INQR_DVSN: '01',
-          UNPR_DVSN: '01',
-          FUND_STTL_ICLD_YN: 'N',
-          FNCG_AMT_AUTO_RDPT_YN: 'N',
-          PRCS_DVSN: '00',
-          CTX_AREA_FK100: '',
-          CTX_AREA_NK100: ''
-        }
-        : {
-          CANO,
-          ACNT_PRDT_CD,
-          OVRS_EXCG_CD: 'NAS', // 나스닥 기준
-          TR_CRCY_CD: 'USD',
-          CTX_AREA_FK200: '',
-          CTX_AREA_NK200: ''
-        }
+        ? { CANO, ACNT_PRDT_CD, AFHR_FLPR_YN: 'N', OFL_YN: '', INQR_DVSN: '01', UNPR_DVSN: '01', FUND_STTL_ICLD_YN: 'N', FNCG_AMT_AUTO_RDPT_YN: 'N', PRCS_DVSN: '00', CTX_AREA_FK100: '', CTX_AREA_NK100: '' }
+        : { CANO, ACNT_PRDT_CD, OVRS_EXCG_CD: 'NAS', TR_CRCY_CD: 'USD', CTX_AREA_FK200: '', CTX_AREA_NK200: '' }
     };
 
     const response = await axios.get(url, config);
     const holdList = response.data.output1;
 
-    // 잔고가 아예 없으면 빈 배열 반환
-    if (!holdList || holdList.length === 0) return [];
+    const holdingsMap = {};
+    if (!holdList || holdList.length === 0) return holdingsMap;
 
-    // 수량이 0보다 큰 종목의 코드만 추출해서 배열로 반환
+    // 💡 변경된 부분: 수량을 객체 매핑 형태로 저장합니다.
     if (isKR) {
-      return holdList.filter(item => Number(item.hldg_qty) > 0).map(item => item.pdno);
+      holdList.forEach(item => {
+        if (Number(item.hldg_qty) > 0) holdingsMap[item.pdno] = Number(item.hldg_qty);
+      });
     } else {
-      return holdList.filter(item => Number(item.ovrs_cblc_qty) > 0).map(item => item.ovrs_pdno);
+      holdList.forEach(item => {
+        if (Number(item.ovrs_cblc_qty) > 0) holdingsMap[item.ovrs_pdno] = Number(item.ovrs_cblc_qty);
+      });
     }
+    return holdingsMap;
   } catch (error) {
     console.error(`❌ [${market}] 잔고 조회 에러:`, error.message);
-    return []; // 에러 시 빈 배열을 반환하여 로직이 멈추지 않게 방어
+    return {};
   }
 };
 
