@@ -41,65 +41,68 @@ const getCurrentPrice = async (ticker, market = 'KR') => {
 /**
  * 2. 과거 데이터 조회 (국내/해외 통합)
  */
+// src/api/kisApi.js 내부 수정
+
 const getHistoricalData = async (ticker, market = 'KR') => {
   const token = await getValidToken();
   const isKR = market === 'KR';
 
-  const today = new Date();
-  const past = new Date();
-  past.setDate(today.getDate() - 150);
-
-  const formatDate = (date) => date.toISOString().split('T')[0].replace(/-/g, '');
-  const endDate = formatDate(today);
-  const startDate = formatDate(past);
-
   try {
-    const trId = isKR ? 'FHKST03010100' : 'HHDFS76950200';
-    const url = isKR
-      ? `${DOMAIN}/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice`
-      : `${DOMAIN}/uapi/overseas-price/v1/quotations/inquire-daily-chartprice`;
+    if (isKR) {
+      // 국장 로직
+      const url = `${DOMAIN}/uapi/domestic-stock/v1/quotations/inquire-daily-price`;
+      const config = {
+        headers: {
+          'content-type': 'application/json; charset=utf-8',
+          authorization: `Bearer ${token}`,
+          appkey: APP_KEY,
+          appsecret: APP_SECRET,
+          tr_id: 'FHKST01010400',
+        },
+        params: { FID_COND_MRKT_DIV_CODE: 'J', FID_INPUT_ISCD: ticker, FID_PERIOD_DIV_CODE: 'D', FID_ORG_ADJ_PRC: '1' },
+      };
+      const response = await axios.get(url, config);
+      if (!response.data.output || response.data.output.length === 0) throw new Error('데이터 없음');
+      return response.data.output.map(item => ({
+        date: item.stck_bsop_date, close: Number(item.stck_clpr), high: Number(item.stck_hgpr), low: Number(item.stck_lwpr)
+      }));
+    } else {
+      // 미장 로직 (NAS 나스닥 -> NYS 뉴욕 순차 탐색)
+      const url = `${DOMAIN}/uapi/overseas-price/v1/quotations/dailyprice`;
 
-    const config = {
-      headers: {
-        'content-type': 'application/json',
-        authorization: `Bearer ${token}`,
-        appkey: APP_KEY,
-        appsecret: APP_SECRET,
-        tr_id: trId,
-      },
-      params: isKR
-        ? {
-          FID_COND_MRKT_DIV_CODE: 'J',
-          FID_INPUT_ISCD: ticker,
-          FID_INPUT_DATE_1: startDate,
-          FID_INPUT_DATE_2: endDate,
-          FID_PERIOD_DIV_CODE: 'D',
-          FID_ORG_ADJ_PRC: '0',
-        }
-        : {
-          AUTH_CODE: '',
-          EXCD: 'NAS', // 기본 나스닥
-          SYMB: ticker,
-          GUBN: '0', // 일봉
-          BYMD: endDate,
-          MODP: '1', // 수정주가
-        }
-    };
+      const fetchUsData = async (excd) => {
+        const config = {
+          headers: {
+            'content-type': 'application/json; charset=utf-8',
+            authorization: `Bearer ${token}`,
+            appkey: APP_KEY,
+            appsecret: APP_SECRET,
+            tr_id: 'FHKST03030100',
+          },
+          params: { EXCD: excd, SYMB: ticker, GUBN: '0', BYMD: '', MODP: '1' },
+        };
+        const res = await axios.get(url, config);
+        // output2가 일별 데이터 배열입니다.
+        if (res.data && res.data.output2 && res.data.output2.length > 0) return res.data.output2;
+        return null;
+      };
 
-    const response = await axios.get(url, config);
-    const rawData = isKR ? response.data.output2 : response.data.output2; // 미장도 동일한 필드명 사용
+      // 1. 나스닥(NAS)으로 먼저 찔러봄
+      let rawData = await fetchUsData('NAS');
 
-    if (!rawData || rawData.length === 0) throw new Error('데이터 없음');
+      // 2. 데이터가 없으면 뉴욕거래소(NYS)로 다시 찔러봄
+      if (!rawData) rawData = await fetchUsData('NYS');
 
-    const ohlcv = rawData.map((item) => ({
-      open: Number(isKR ? item.stck_oprc : item.open),
-      high: Number(isKR ? item.stck_hgpr : item.high),
-      low: Number(isKR ? item.stck_lwpr : item.low),
-      close: Number(isKR ? item.stck_clpr : item.clos),
-      volume: Number(isKR ? item.acml_vol : item.tvol),
-    }));
+      // 3. 그래도 없으면 아멕스(AMS)로 찔러봄
+      if (!rawData) rawData = await fetchUsData('AMS');
 
-    return ohlcv.reverse();
+      if (!rawData) throw new Error('데이터 없음 (거래소 매칭 실패 또는 지원하지 않는 티커)');
+
+      // 데이터 정제 후 반환
+      return rawData.map(item => ({
+        date: item.xymd, close: Number(item.clos), high: Number(item.high), low: Number(item.low)
+      }));
+    }
   } catch (error) {
     console.error(`❌ [${market}][${ticker}] 과거 데이터 실패:`, error.message);
     throw error;
