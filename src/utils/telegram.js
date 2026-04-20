@@ -6,6 +6,7 @@ const path = require('path');
 const token = process.env.TELEGRAM_TOKEN;
 const myChatId = process.env.TELEGRAM_CHAT_ID;
 const WATCHLIST_PATH = path.join(__dirname, '../../watchlist.json');
+const SETTINGS_FILE = 'settings.json';
 
 // 1. Polling을 true로 켜서 메시지 수신 대기 상태로 만듭니다.
 let bot;
@@ -14,8 +15,32 @@ if (token) {
   console.log('📡 텔레그램 Admin 수신 대기 중...');
 }
 
-// 💡 알림 전송 함수 (HTML 모드 적용)
+// 설정 읽기
+const readSettings = () => {
+  if (!fs.existsSync(SETTINGS_FILE)) return { isNotiOn: true };
+  return JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8'));
+};
+
+// 설정 쓰기
+const writeSettings = (settings) => {
+  fs.writeFileSync(SETTINGS_FILE, JSON.stringify(settings, null, 2));
+};
+
+// 💡 알림 전송 함수 업그레이드
 const sendMessage = async (text) => {
+  const settings = readSettings();
+  const now = new Date();
+  const hour = now.getHours(); // 0~23
+
+  // 1. 알림이 꺼져있으면 전송 안 함
+  if (!settings.isNotiOn) return;
+
+  // 2. 새벽 00시 ~ 아침 08시 사이면 전송 안 함
+  if (hour >= 0 && hour < 8) {
+    console.log(`[에티켓 모드] ${hour}시이므로 텔레그램 전송을 건너뜁니다.`);
+    return;
+  }
+
   try {
     await bot.sendMessage(myChatId, text, { parse_mode: 'HTML' });
   } catch (err) {
@@ -160,9 +185,9 @@ bot.onText(/\/guide/, (msg) => {
   if (String(msg.chat.id) !== myChatId) return;
 
   const guideText = `
-🤖 <b>글로벌 자동매매 봇 사용 가이드</b>
+🤖 <b>글로벌 자동매매 봇 사용 가이드 (Ver 2.0)</b>
 
-✅ <b>종목 추가 및 비중 설정 (다중 입력 지원)</b>
+✅ <b>종목 추가 및 비중 설정</b>
 - 사용법: <code>/add 종목코드 [비중], 종목코드 [비중]...</code>
 - 예시 1: <code>/add 005930 10</code> (삼성전자 10%)
 - 예시 2: <code>/add AAPL 10, TSLA, NVDA 20</code> (테슬라는 기본 5% 적용)
@@ -175,11 +200,26 @@ bot.onText(/\/guide/, (msg) => {
 📋 <b>리스트 확인</b>
 - <code>/list</code> : 현재 감시 중인 모든 종목과 비중 출력
 
+🔔 <b>알림 제어</b>
+- <code>/noti on</code> : 모든 알림 켜기
+- <code>/noti off</code> : 모든 알림 끄기
+- 💡 <b>에티켓 모드:</b> 설정과 관계없이 새벽 00시~08시 사이에는 알림이 발송되지 않습니다.
+
 💡 <b>기타 팁</b>
 - 대소문자 구분 없이 찰떡같이 인식합니다.
   `;
 
   bot.sendMessage(myChatId, guideText, { parse_mode: 'HTML' });
+});
+
+// 💡 명령어 추가: /noti on 또는 /noti off
+bot.onText(/\/noti\s+(on|off)/i, (msg, match) => {
+  if (String(msg.chat.id) !== myChatId) return;
+  const status = match[1].toLowerCase() === 'on';
+  writeSettings({ isNotiOn: status });
+
+  const statusTxt = status ? '✅ 켜짐' : '📴 꺼짐 (에티켓 시간 포함)';
+  bot.sendMessage(myChatId, `🔔 <b>알림 설정 변경</b>: ${statusTxt}`, { parse_mode: 'HTML' });
 });
 
 module.exports = { sendMessage, readWatchlist };
