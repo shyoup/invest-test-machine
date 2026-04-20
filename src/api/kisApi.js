@@ -56,12 +56,37 @@ const getHistoricalData = async (ticker, market = 'KR') => {
   const token = await getValidToken();
   const isKR = market === 'KR';
 
+  // 💡 기관총 방지용 딜레이 함수
   const microSleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
   try {
     if (isKR) {
-      // 🇰🇷 국장 로직 (기존과 동일)
-      // ... 생략 ...
+      // 🇰🇷 국장 로직
+      const url = `${DOMAIN}/uapi/domestic-stock/v1/quotations/inquire-daily-price`;
+      const config = {
+        headers: {
+          'content-type': 'application/json; charset=utf-8',
+          authorization: `Bearer ${token}`,
+          appkey: APP_KEY,
+          appsecret: APP_SECRET,
+          tr_id: 'FHKST01010400',
+        },
+        params: { FID_COND_MRKT_DIV_CODE: 'J', FID_INPUT_ISCD: ticker, FID_PERIOD_DIV_CODE: 'D', FID_ORG_ADJ_PRC: '1' },
+      };
+      const response = await axios.get(url, config);
+
+      // 🛡️ [수정됨] KIS 에러 메시지가 왔거나 output 배열이 없을 때의 완벽한 방어
+      if (response.data.rt_cd === '1') {
+        throw new Error(`KIS 응답 에러: ${response.data.msg1}`);
+      }
+      if (!response.data.output || !Array.isArray(response.data.output)) {
+        throw new Error('데이터 없음 (응답에 배열이 존재하지 않습니다)');
+      }
+
+      return response.data.output.map(item => ({
+        date: item.stck_bsop_date, close: Number(item.stck_clpr), high: Number(item.stck_hgpr), low: Number(item.stck_lwpr)
+      }));
+
     } else {
       // 🇺🇸 미장 로직
       const url = `${DOMAIN}/uapi/overseas-price/v1/quotations/dailyprice`;
@@ -81,33 +106,33 @@ const getHistoricalData = async (ticker, market = 'KR') => {
           };
           const res = await axios.get(url, config);
 
+          // 미장도 rt_cd 에러가 있는지 1차 확인
+          if (res.data.rt_cd === '1') throw new Error(res.data.msg1);
+
           if (res.data && res.data.output2 && res.data.output2.length > 0) {
             return res.data.output2;
           }
           return null;
         } catch (err) {
           const kisErrMsg = getKisErrorMsg(err);
-          console.log(`⚠️ [US][${ticker}] ${excd} 탐색 실패 사유: ${kisErrMsg}`);
+          console.log(`⚠️ [US][${ticker}] ${excd} 탐색 실패: ${kisErrMsg}`);
           return null;
         }
       };
 
-      // 💡 1. 나스닥 찌르기
       let rawData = await fetchUsData('NAS');
 
-      // 💡 2. 없으면 1초 쉬고 뉴욕 찌르기
       if (!rawData) {
-        await microSleep(1000);
+        await microSleep(1000); // 💡 0.5초에서 1초로 여유 증가
         rawData = await fetchUsData('NYS');
       }
 
-      // 💡 3. 그래도 없으면 1초 쉬고 아멕스 찌르기
       if (!rawData) {
-        await microSleep(1000);
+        await microSleep(1000); // 💡 1초 여유 증가
         rawData = await fetchUsData('AMS');
       }
 
-      if (!rawData) throw new Error('미장 거래소(NAS/NYS/AMS) 전체 탐색 실패 (로그 확인 요망)');
+      if (!rawData) throw new Error('미장 거래소 전체 탐색 실패 (야간점검 또는 티커오류)');
 
       return rawData.map(item => ({
         date: item.xymd, close: Number(item.clos), high: Number(item.high), low: Number(item.low)
@@ -115,7 +140,7 @@ const getHistoricalData = async (ticker, market = 'KR') => {
     }
   } catch (error) {
     const finalErrMsg = getKisErrorMsg(error);
-    console.error(`❌ [${market}][${ticker}] 과거 데이터 API 에러: ${finalErrMsg}`);
+    console.error(`❌ [${market}][${ticker}] API 통신 에러: ${finalErrMsg}`);
     throw new Error(finalErrMsg);
   }
 };
