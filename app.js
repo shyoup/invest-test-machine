@@ -1,6 +1,6 @@
 require('dotenv').config();
 const cron = require('node-cron');
-const { sendMessage, readWatchlist } = require('./src/utils/telegram');
+const { bot, myChatId, sendMessage, readWatchlist } = require('./src/utils/telegram');
 const { getValidToken } = require('./src/api/tokenManager');
 const { getCurrentPrice, getHistoricalData, getAvailableCash, executeOrder, getCurrentHoldings } = require('./src/api/kisApi');
 const { analyzeSignal } = require('./src/strategy/algorithm');
@@ -109,6 +109,23 @@ const runScanner = async (market) => {
     console.error(`🚨 ${market} 스캐너 치명적 에러:`, error.message);
   }
 };
+
+// ==========================================
+//  💡 수동 스캔 명령어 (/scan)
+//  사용자가 텔레그램에서 /scan을 입력하면 즉시 실행
+// ==========================================
+bot.onText(/\/scan/i, async (msg) => {
+  // 본인 확인 (보안)
+  if (String(msg.chat.id) !== myChatId) return;
+
+  await sendMessage("🚀 <b>수동 스캔 요청 포착!</b>\n전체 종목 분석을 즉시 시작합니다.");
+
+  // 국장/미장 순차 실행
+  await runScanner('KR');
+  await runScanner('US');
+
+  await sendMessage("🏁 <b>수동 스캔 및 매매 처리가 완료되었습니다.</b>");
+});
 
 // ==========================================
 // ⏱️ 크론(Cron) 스케줄러 세팅
