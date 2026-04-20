@@ -36,7 +36,7 @@ const sendMessage = async (text) => {
   if (!settings.isNotiOn) return;
 
   // 2. 새벽 00시 ~ 아침 08시 사이면 전송 안 함
-  if (hour >= 0 && hour < 8) {
+  if (hour >= 1 && hour < 8) {
     console.log(`[에티켓 모드] ${hour}시이므로 텔레그램 전송을 건너뜁니다.`);
     return;
   }

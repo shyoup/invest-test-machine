@@ -88,8 +88,9 @@ const getHistoricalData = async (ticker, market = 'KR') => {
       }));
 
     } else {
-      // 🇺🇸 미장 로직
+      // 🇺🇸 미장 로직 (수정됨)
       const url = `${DOMAIN}/uapi/overseas-price/v1/quotations/dailyprice`;
+      let lastApiError = null; // 💡 KIS 찐 에러를 담아둘 변수
 
       const fetchUsData = async (excd) => {
         try {
@@ -106,33 +107,47 @@ const getHistoricalData = async (ticker, market = 'KR') => {
           };
           const res = await axios.get(url, config);
 
-          // 미장도 rt_cd 에러가 있는지 1차 확인
-          if (res.data.rt_cd === '1') throw new Error(res.data.msg1);
+          // KIS가 200 OK를 주면서 바디에 에러를 담아 보낼 때
+          if (res.data.rt_cd === '1') {
+            throw new Error(`[${res.data.msg_cd}] ${res.data.msg1}`);
+          }
 
           if (res.data && res.data.output2 && res.data.output2.length > 0) {
             return res.data.output2;
           }
           return null;
         } catch (err) {
-          const kisErrMsg = getKisErrorMsg(err);
-          console.log(`⚠️ [US][${ticker}] ${excd} 탐색 실패: ${kisErrMsg}`);
-          return null;
+          const errMsg = getKisErrorMsg(err);
+          lastApiError = errMsg; // 가장 최근 에러 메시지 저장
+
+          console.log(`⚠️ [US][${ticker}] ${excd} 탐색 실패: ${errMsg}`);
+
+          // 💡 핵심: 단순 '종목 없음(500)'이 아니라 트래픽 초과, 야간 점검 등 치명적 에러면 
+          // 다음 거래소 찌르기를 포기하고 즉시 에러를 던져버립니다!
+          if (errMsg.includes('초과') || errMsg.includes('야간') || errMsg.includes('점검')) {
+            throw new Error(errMsg);
+          }
+          return null; // 일반적인 종목 미스매치면 다음 거래소로 넘김
         }
       };
 
       let rawData = await fetchUsData('NAS');
 
       if (!rawData) {
-        await microSleep(1000); // 💡 0.5초에서 1초로 여유 증가
+        await microSleep(1000);
         rawData = await fetchUsData('NYS');
       }
 
       if (!rawData) {
-        await microSleep(1000); // 💡 1초 여유 증가
+        await microSleep(1000);
         rawData = await fetchUsData('AMS');
       }
 
-      if (!rawData) throw new Error('미장 거래소 전체 탐색 실패 (야간점검 또는 티커오류)');
+      // 💡 제 맘대로 썼던 뭉뚱그린 메시지 삭제! 
+      // KIS가 던진 날것의 에러가 있으면 그걸 던지고, 아니면 데이터 없음으로 처리합니다.
+      if (!rawData) {
+        throw new Error(lastApiError || `해당 티커를 NAS/NYS/AMS에서 찾을 수 없습니다.`);
+      }
 
       return rawData.map(item => ({
         date: item.xymd, close: Number(item.clos), high: Number(item.high), low: Number(item.low)
