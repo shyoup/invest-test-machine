@@ -52,47 +52,88 @@ const writeWatchlist = (list) => {
   fs.writeFileSync(WATCHLIST_PATH, JSON.stringify(list, null, 2), 'utf8');
 };
 
-// 💡 명령어 1: /add [시장] [종목코드] [비중%] (예: /add KR 005930 10)
-bot.onText(/\/add (KR|US) ([A-Za-z0-9]+) (\d+)/i, (msg, match) => {
+// 💡 명령어 1: 스마트 다중 추가 (/add 종목코드 [비중], 종목코드 [비중] ...)
+bot.onText(/\/add\s+(.+)/i, (msg, match) => {
   if (String(msg.chat.id) !== myChatId) return;
 
-  const market = match[1].toUpperCase();
-  const ticker = match[2].trim().toUpperCase();
-  const weight = Number(match[3]); // 비중 추가
-
+  const inputString = match[1].trim();
+  const items = inputString.split(','); // 콤마로 그룹 분리
   const listObj = readWatchlist();
 
-  // 비중이 1~100 사이인지 검증
-  if (weight < 1 || weight > 100) {
-    bot.sendMessage(myChatId, `⚠️ 비중은 1부터 100 사이의 숫자로 입력해 주세요.`);
-    return;
-  }
+  let successMsgs = [];
+  let errorMsgs = [];
 
-  // 객체 프로퍼티로 할당 (이미 있으면 비중 덮어쓰기)
-  const isUpdate = listObj[market][ticker] !== undefined;
-  listObj[market][ticker] = weight;
+  items.forEach(item => {
+    // 공백을 기준으로 티커와 비중 분리
+    const parts = item.trim().split(/\s+/);
+    if (parts.length === 0 || parts[0] === '') return;
+
+    const rawTicker = parts[0];
+    const weight = parts[1] ? Number(parts[1]) : 5; // 입력 없으면 디폴트 5%
+
+    // 🧠 시장 자동 분류
+    const market = /^\d+$/.test(rawTicker) ? 'KR' : 'US';
+    const ticker = market === 'US' ? rawTicker.toUpperCase() : rawTicker;
+
+    if (isNaN(weight) || weight < 1 || weight > 100) {
+      errorMsgs.push(`⚠️ <code>${ticker}</code>: 비중 오류 (1~100 입력)`);
+      return; // 에러 난 종목만 건너뛰고 나머지는 계속 진행
+    }
+
+    listObj[market][ticker] = weight;
+    successMsgs.push(`- [${market}] <code>${ticker}</code> (${weight}%)`);
+  });
 
   writeWatchlist(listObj);
-  const actionText = isUpdate ? '비중 수정' : '추가';
-  bot.sendMessage(myChatId, `✅ [${market}] ${actionText} 완료: ${ticker} (목표비중: ${weight}%)`);
+
+  let replyMsg = '';
+  if (successMsgs.length > 0) {
+    replyMsg += `✅ <b>스마트 다중 추가 완료</b>\n${successMsgs.join('\n')}\n`;
+  }
+  if (errorMsgs.length > 0) {
+    replyMsg += `\n${errorMsgs.join('\n')}`;
+  }
+
+  bot.sendMessage(myChatId, replyMsg.trim(), { parse_mode: 'HTML' });
 });
 
-// 💡 명령어 2: /del [시장] [종목코드] (예: /del KR 005930)
-bot.onText(/\/del (KR|US) ([A-Za-z0-9]+)/i, (msg, match) => {
+// 💡 명령어 2: 스마트 다중 삭제 (/del 종목코드, 종목코드 ...)
+bot.onText(/\/del\s+(.+)/i, (msg, match) => {
   if (String(msg.chat.id) !== myChatId) return;
 
-  const market = match[1].toUpperCase();
-  const ticker = match[2].trim().toUpperCase();
+  const inputString = match[1].trim();
+  const items = inputString.split(',');
   const listObj = readWatchlist();
 
-  if (listObj[market][ticker] === undefined) {
-    bot.sendMessage(myChatId, `⚠️ ${market} 리스트에 없는 종목입니다: ${ticker}`);
-    return;
+  let successMsgs = [];
+  let errorMsgs = [];
+
+  items.forEach(item => {
+    const rawTicker = item.trim();
+    if (!rawTicker) return;
+
+    const market = /^\d+$/.test(rawTicker) ? 'KR' : 'US';
+    const ticker = market === 'US' ? rawTicker.toUpperCase() : rawTicker;
+
+    if (listObj[market][ticker] !== undefined) {
+      delete listObj[market][ticker];
+      successMsgs.push(`<code>${ticker}</code>`);
+    } else {
+      errorMsgs.push(`⚠️ <code>${ticker}</code>: 리스트에 없음`);
+    }
+  });
+
+  writeWatchlist(listObj);
+
+  let replyMsg = '';
+  if (successMsgs.length > 0) {
+    replyMsg += `🗑️ <b>다중 삭제 완료</b>\n- [${successMsgs.join(', ')}]\n`;
+  }
+  if (errorMsgs.length > 0) {
+    replyMsg += `\n${errorMsgs.join('\n')}`;
   }
 
-  delete listObj[market][ticker]; // 객체에서 키 삭제
-  writeWatchlist(listObj);
-  bot.sendMessage(myChatId, `🗑️ [${market}] 삭제 완료: ${ticker}`);
+  bot.sendMessage(myChatId, replyMsg.trim(), { parse_mode: 'HTML' });
 });
 
 // 💡 명령어 3: /list
@@ -114,32 +155,30 @@ bot.onText(/\/list/, (msg) => {
   bot.sendMessage(myChatId, `📋 [현재 감시 종목 및 비중]\n🇰🇷 국장: ${krList}\n🇺🇸 미장: ${usList}`);
 });
 
-// 명령어 4: /guide (HTML 태그 버전 - 에러 확률 0%)
+// 💡 명령어 4: 가이드 (다중 입력 안내 추가)
 bot.onText(/\/guide/, (msg) => {
   if (String(msg.chat.id) !== myChatId) return;
 
   const guideText = `
 🤖 <b>글로벌 자동매매 봇 사용 가이드</b>
 
-✅ <b>종목 추가 및 비중 설정</b>
-- 국장: <code>/add KR 종목코드 비중(%)</code> (예: <code>/add KR 005930 10</code>)
-- 미장: <code>/add US 티커 비중(%)</code> (예: <code>/add US NVDA 15</code>)
-- 💡 이미 등록된 종목을 다시 입력하면 새로운 비중으로 덮어쓰기(수정) 됩니다.
+✅ <b>종목 추가 및 비중 설정 (다중 입력 지원)</b>
+- 사용법: <code>/add 종목코드 [비중], 종목코드 [비중]...</code>
+- 예시 1: <code>/add 005930 10</code> (삼성전자 10%)
+- 예시 2: <code>/add AAPL 10, TSLA, NVDA 20</code> (테슬라는 기본 5% 적용)
+💡 <i>비중 생략 시 기본 <b>5%</b> 세팅, 숫자만 입력하면 국장(KR)으로 자동 인식합니다.</i>
 
-🗑️ <b>종목 삭제</b>
-- 국장: <code>/del KR 종목코드</code> (예: <code>/del KR 005930</code>)
-- 미장: <code>/del US 티커</code> (예: <code>/del US NVDA</code>)
+🗑️ <b>종목 삭제 (다중 입력 지원)</b>
+- 사용법: <code>/del 종목코드, 종목코드...</code>
+- 예시: <code>/del 005930, AAPL, TSLA</code>
 
 📋 <b>리스트 확인</b>
-- <code>/list</code> : 현재 감시 중인 모든 종목과 설정 비중(%) 출력
+- <code>/list</code> : 현재 감시 중인 모든 종목과 비중 출력
 
-💡 <b>팁</b>
-- 비중은 1~100 사이의 정수로만 입력해 주세요.
-- 미장 티커는 대소문자를 구분하지 않습니다.
-- 국장 스캐너는 평일 주간에, 미장 스캐너는 평일 야간에 자동 가동됩니다.
+💡 <b>기타 팁</b>
+- 대소문자 구분 없이 찰떡같이 인식합니다.
   `;
 
-  // 💡 여기서 parse_mode를 Markdown이 아닌 HTML로 쏩니다!
   bot.sendMessage(myChatId, guideText, { parse_mode: 'HTML' });
 });
 
