@@ -96,7 +96,7 @@ const runScanner = async (market) => {
         console.error(`❌ [${ticker}] 분석 중 에러:`, error.message);
       }
 
-      await sleep(1000); // API 과부하 방지
+      await sleep(2500); // API 과부하 방지
     }
 
     // 📢 [알림 4] 회차 요약 보고 (발견된 시그널이 있을 때만)

@@ -49,7 +49,7 @@ const getHistoricalData = async (ticker, market = 'KR') => {
 
   try {
     if (isKR) {
-      // 국장 로직
+      // 🇰🇷 국장 로직 (변경 없음)
       const url = `${DOMAIN}/uapi/domestic-stock/v1/quotations/inquire-daily-price`;
       const config = {
         headers: {
@@ -66,39 +66,49 @@ const getHistoricalData = async (ticker, market = 'KR') => {
       return response.data.output.map(item => ({
         date: item.stck_bsop_date, close: Number(item.stck_clpr), high: Number(item.stck_hgpr), low: Number(item.stck_lwpr)
       }));
+
     } else {
-      // 미장 로직 (NAS 나스닥 -> NYS 뉴욕 순차 탐색)
+      // 🇺🇸 미장 로직 (500 에러 방어 및 순차 탐색)
       const url = `${DOMAIN}/uapi/overseas-price/v1/quotations/dailyprice`;
 
       const fetchUsData = async (excd) => {
-        const config = {
-          headers: {
-            'content-type': 'application/json; charset=utf-8',
-            authorization: `Bearer ${token}`,
-            appkey: APP_KEY,
-            appsecret: APP_SECRET,
-            tr_id: 'FHKST03030100',
-          },
-          params: { EXCD: excd, SYMB: ticker, GUBN: '0', BYMD: '', MODP: '1' },
-        };
-        const res = await axios.get(url, config);
-        // output2가 일별 데이터 배열입니다.
-        if (res.data && res.data.output2 && res.data.output2.length > 0) return res.data.output2;
-        return null;
+        try {
+          const config = {
+            headers: {
+              'content-type': 'application/json',
+              authorization: `Bearer ${token}`,
+              appkey: APP_KEY,
+              appsecret: APP_SECRET,
+              tr_id: 'FHKST03030100',
+              custtype: 'P' // 개인회원 명시 (API 안정성 확보)
+            },
+            // 💡 AUTH 등 필수 빈 문자열 파라미터 추가
+            params: { AUTH: '', EXCD: excd, SYMB: ticker, GUBN: '0', BYMD: '', MODP: '1' },
+          };
+          const res = await axios.get(url, config);
+
+          if (res.data && res.data.output2 && res.data.output2.length > 0) {
+            return res.data.output2;
+          }
+          return null;
+        } catch (err) {
+          // 💡 핵심: 거래소가 틀려서 500 에러가 나도 함수를 터뜨리지 않고 null을 반환
+          return null;
+        }
       };
 
       // 1. 나스닥(NAS)으로 먼저 찔러봄
       let rawData = await fetchUsData('NAS');
 
-      // 2. 데이터가 없으면 뉴욕거래소(NYS)로 다시 찔러봄
+      // 2. 실패(500 에러 포함) 시 뉴욕거래소(NYS)로 다시 찔러봄
       if (!rawData) rawData = await fetchUsData('NYS');
 
-      // 3. 그래도 없으면 아멕스(AMS)로 찔러봄
+      // 3. 그래도 안 되면 아멕스(AMS)로 찔러봄
       if (!rawData) rawData = await fetchUsData('AMS');
 
-      if (!rawData) throw new Error('데이터 없음 (거래소 매칭 실패 또는 지원하지 않는 티커)');
+      // 3곳 다 찔렀는데 없으면 진짜 없는 종목
+      if (!rawData) throw new Error('미장 거래소(NAS/NYS/AMS)에서 데이터를 찾을 수 없습니다.');
 
-      // 데이터 정제 후 반환
       return rawData.map(item => ({
         date: item.xymd, close: Number(item.clos), high: Number(item.high), low: Number(item.low)
       }));
