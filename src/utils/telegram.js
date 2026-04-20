@@ -116,32 +116,33 @@ bot.onText(/\/list/, (msg) => {
   bot.sendMessage(myChatId, `📋 [현재 감시 종목 및 비중]\n🇰🇷 국장: ${krList}\n🇺🇸 미장: ${usList}`);
 });
 
-// 명령어 4: /guide
+// 명령어 4: /guide (HTML 태그 버전 - 에러 확률 0%)
 bot.onText(/\/guide/, (msg) => {
   if (String(msg.chat.id) !== myChatId) return;
 
   const guideText = `
-🤖 *글로벌 자동매매 봇 사용 가이드*
+🤖 <b>글로벌 자동매매 봇 사용 가이드</b>
 
-✅ *종목 추가 및 비중 설정*
-- 국장: \`/add KR 종목코드 비중(%)\` (예: \`/add KR 005930 10\`)
-- 미장: \`/add US 티커 비중(%)\` (예: \`/add US NVDA 15\`)
+✅ <b>종목 추가 및 비중 설정</b>
+- 국장: <code>/add KR 종목코드 비중(%)</code> (예: <code>/add KR 005930 10</code>)
+- 미장: <code>/add US 티커 비중(%)</code> (예: <code>/add US NVDA 15</code>)
 - 💡 이미 등록된 종목을 다시 입력하면 새로운 비중으로 덮어쓰기(수정) 됩니다.
 
-🗑️ *종목 삭제*
-- 국장: \`/del KR 종목코드\` (예: \`/del KR 005930\`)
-- 미장: \`/del US 티커\` (예: \`/del US NVDA\`)
+🗑️ <b>종목 삭제</b>
+- 국장: <code>/del KR 종목코드</code> (예: <code>/del KR 005930</code>)
+- 미장: <code>/del US 티커</code> (예: <code>/del US NVDA</code>)
 
-📋 *리스트 확인*
-- \`/list\` : 현재 감시 중인 모든 종목과 설정 비중(%) 출력
+📋 <b>리스트 확인</b>
+- <code>/list</code> : 현재 감시 중인 모든 종목과 설정 비중(%) 출력
 
-💡 *팁*
+💡 <b>팁</b>
 - 비중은 1~100 사이의 정수로만 입력해 주세요.
 - 미장 티커는 대소문자를 구분하지 않습니다.
 - 국장 스캐너는 평일 주간에, 미장 스캐너는 평일 야간에 자동 가동됩니다.
   `;
 
-  bot.sendMessage(myChatId, guideText, { parse_mode: 'Markdown' });
+  // 💡 여기서 parse_mode를 Markdown이 아닌 HTML로 쏩니다!
+  bot.sendMessage(myChatId, guideText, { parse_mode: 'HTML' });
 });
 
 module.exports = { sendMessage, readWatchlist };
