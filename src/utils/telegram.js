@@ -2,6 +2,7 @@ require('dotenv').config();
 const TelegramBot = require('node-telegram-bot-api');
 const fs = require('fs');
 const path = require('path');
+const { bot, myChatId } = require('./src/utils/telegram'); // bot 객체 불러오기
 
 const token = process.env.TELEGRAM_TOKEN;
 const myChatId = process.env.TELEGRAM_CHAT_ID;
@@ -199,6 +200,7 @@ bot.onText(/\/guide/, (msg) => {
 
 📋 <b>리스트 확인</b>
 - <code>/list</code> : 현재 감시 중인 모든 종목과 비중 출력
+- <code>/scan</code> : <b>즉시 모든 종목 스캔 및 매매 실행</b>
 
 🔔 <b>알림 제어</b>
 - <code>/noti on</code> : 모든 알림 켜기
@@ -220,6 +222,22 @@ bot.onText(/\/noti\s+(on|off)/i, (msg, match) => {
 
   const statusTxt = status ? '✅ 켜짐' : '📴 꺼짐 (에티켓 시간 포함)';
   bot.sendMessage(myChatId, `🔔 <b>알림 설정 변경</b>: ${statusTxt}`, { parse_mode: 'HTML' });
+});
+
+/**
+ * 💡 수동 스캔 명령어 (/scan)
+ */
+bot.onText(/\/scan/i, async (msg) => {
+  if (String(msg.chat.id) !== myChatId) return;
+
+  await sendMessage("🚀 <b>수동 스캔 요청을 확인했습니다.</b>\n국장과 미장 순차 분석을 시작합니다.");
+
+  // 국장 스캔 실행
+  await runScanner('KR');
+  // 미장 스캔 실행
+  await runScanner('US');
+
+  await sendMessage("🏁 <b>수동 스캔이 완료되었습니다.</b>");
 });
 
 module.exports = { sendMessage, readWatchlist };
