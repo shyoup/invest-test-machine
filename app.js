@@ -36,20 +36,20 @@ const runScanner = async (market) => {
       try {
         // 3. 데이터 분석 및 시그널 확인
         const ohlcvData = await getHistoricalData(ticker, market);
-        const signal = analyzeSignal(ohlcvData);
+        const signal = analyzeSignal(ohlcvData, ticker);
 
-        if (signal !== 'HOLD') {
+        if (signal.state !== 'HOLD') {
           const currentPrice = await getCurrentPrice(ticker, market);
           const currency = market === 'KR' ? '원' : '달러';
           const priceStr = currentPrice.toLocaleString() + currency;
-          const directionTxt = signal === 'BUY' ? '🟢 매수' : '🔴 매도';
+          const directionTxt = signal.state === 'BUY' ? '🟢 매수' : '🔴 매도';
 
           // 📢 [알림 1] 시그널 포착 보고 (요약용 배열에도 저장)
           foundSignals.push(`${directionTxt} <code>${ticker}</code>`);
           await sendMessage(`🔍 <b>[시그널 포착]</b>\n- 종목: <code>${ticker}</code>\n- 방향: ${directionTxt}\n- 현재가: ${priceStr}`);
 
           // 🛒 매수 프로세스
-          if (signal === 'BUY') {
+          if (signal.state === 'BUY') {
             if (holdingsMap[ticker]) {
               await sendMessage(`🛡️ <b>[매수 보류]</b> <code>${ticker}</code> - 이미 보유 중입니다.`);
               continue;
@@ -74,7 +74,7 @@ const runScanner = async (market) => {
           }
 
           // 🛒 매도 프로세스
-          else if (signal === 'SELL') {
+          else if (signal.state === 'SELL') {
             const holdingQty = holdingsMap[ticker];
 
             if (!holdingQty) {
@@ -91,12 +91,16 @@ const runScanner = async (market) => {
               await sendMessage(`❌ <b>[매도 주문 실패]</b>\n- 종목: <code>${ticker}</code>\n- 사유: <code>${err.message}</code>`);
             }
           }
+        } else {
+          console.log(signal.message);
+          await sendMessage(signal.message);
         }
+
       } catch (error) {
         console.error(`❌ [${ticker}] 분석 중 에러:`, error.message);
       }
 
-      await sleep(2500); // API 과부하 방지
+      await sleep(1000); // API 과부하 방지
     }
 
     // 📢 [알림 4] 회차 요약 보고 (발견된 시그널이 있을 때만)

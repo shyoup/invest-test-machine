@@ -28,6 +28,7 @@ const writeSettings = (settings) => {
 
 // 💡 알림 전송 함수 업그레이드
 const sendMessage = async (text) => {
+  if (text === '') return;
   const settings = readSettings();
   const now = new Date();
   const hour = now.getHours(); // 0~23

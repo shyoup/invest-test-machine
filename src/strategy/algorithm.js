@@ -40,7 +40,7 @@ const getLatestIchimoku = (highPrices, lowPrices) => {
  * @param {Array} ohlcvData - [{ open, high, low, close, volume }, ...] 형태의 과거 데이터 배열
  * @returns {string} 'BUY' | 'SELL' | 'HOLD'
  */
-const analyzeSignal = (ohlcvData) => {
+const analyzeSignal = (ohlcvData, ticker) => {
   // 데이터 파싱
   const highs = ohlcvData.map((d) => d.high);
   const lows = ohlcvData.map((d) => d.low);
@@ -54,13 +54,14 @@ const analyzeSignal = (ohlcvData) => {
   const rsi = getLatestRSI(closes);
   const ichimoku = getLatestIchimoku(highs, lows);
 
-  if (!rsi || !ichimoku) return 'HOLD'; // 데이터가 부족해 계산이 안 된 경우 방어 로직
+  if (!rsi || !ichimoku) return { state: 'HOLD', message: '' }; // 데이터가 부족해 계산이 안 된 경우 방어 로직
 
   const cloudTop = Math.max(ichimoku.spanA, ichimoku.spanB);
   const cloudBottom = Math.min(ichimoku.spanA, ichimoku.spanB);
 
   // [로직 디버깅용 로그] - 실제 운영 시에는 주석 처리해도 됩니다.
-  console.log(`📊 현재가: ${currentPrice} | RSI: ${rsi.toFixed(2)} | 구름대상단: ${cloudTop} | 전환선: ${ichimoku.conversion}`);
+  const resultLog = `📊 종목명: ${ticker} | 현재가: ${currentPrice} | RSI: ${rsi.toFixed(2)} | 구름대상단: ${cloudTop} | 전환선: ${ichimoku.conversion}`;
+  console.log(resultLog);
 
   // ==========================================
   // 🟢 매수 조건 (Buy Signal)
@@ -73,7 +74,7 @@ const analyzeSignal = (ohlcvData) => {
   const isNotOverbought = rsi < 70;
 
   if (isAboveCloud && isLaggingSpanBullish && isNotOverbought) {
-    return 'BUY';
+    return { state: 'BUY', message: '' };
   }
 
   // ==========================================
@@ -86,11 +87,11 @@ const analyzeSignal = (ohlcvData) => {
   const isBelowCloud = currentPrice < cloudBottom;
 
   if (isBelowConversion || isBelowCloud) {
-    return 'SELL';
+    return { state: 'SELL', message: '' };
   }
 
   // 매수/매도 조건에 모두 해당하지 않으면 관망
-  return 'HOLD';
+  return { state: 'HOLD', message: '' };
 };
 
 module.exports = {

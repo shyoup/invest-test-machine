@@ -1,71 +1,40 @@
-require('dotenv').config();
 const axios = require('axios');
 const { getValidToken } = require('./tokenManager');
 
-const DOMAIN = 'https://openapivts.koreainvestment.com:29443';
 const APP_KEY = process.env.KIS_APP_KEY;
 const APP_SECRET = process.env.KIS_SECRET_KEY;
+const DOMAIN = process.env.KIS_DOMAIN;
+const CANO = process.env.KIS_ACCOUNT_NO;
+const ACNT_PRDT_CD = process.env.KIS_ACCOUNT_PRDT;
 
-/**
- * 1. 현재가 조회 (국내/해외 통합)
- */
-const getCurrentPrice = async (ticker, market = 'KR') => {
-  const token = await getValidToken();
-  const isKR = market === 'KR';
+// 💡 1. 실전투자 / 모의투자 환경 자동 판별
+const IS_MOCK = DOMAIN.includes('openapivts');
 
-  try {
-    const trId = isKR ? 'FHKST01010100' : 'HHDFS00000300'; // 국장 vs 미장 TR ID
-    const config = {
-      headers: {
-        'content-type': 'application/json',
-        authorization: `Bearer ${token}`,
-        appkey: APP_KEY,
-        appsecret: APP_SECRET,
-        tr_id: trId,
-      },
-      params: isKR
-        ? { fid_cond_mrkt_div_code: 'J', fid_input_iscd: ticker }
-        : { AUTH_CODE: '', EXCD: 'NAS', SYMB: ticker } // 미장은 기본 NAS(나스닥) 설정
-    };
-
-    const response = await axios.get(`${DOMAIN}/uapi/${isKR ? 'domestic-stock' : 'overseas-price'}/v1/quotations/inquire-price`, config);
-
-    // 국장은 stck_prpr, 미장은 last 필드 사용
-    return isKR ? response.data.output.stck_prpr : response.data.output.last;
-  } catch (error) {
-    console.error(`❌ [${market}][${ticker}] 현재가 조회 실패:`, error.message);
-    throw error;
-  }
-};
-
-/**
- * 2. 과거 데이터 조회 (국내/해외 통합)
- */
-// src/api/kisApi.js 내부 수정
-
-// 💡 KIS 전용 에러 메시지 추출 헬퍼 함수
+// 💡 KIS 전용 에러 메시지 추출 헬퍼
 const getKisErrorMsg = (err) => {
   if (err.response && err.response.data) {
     const { msg_cd, msg1 } = err.response.data;
-    if (msg_cd || msg1) return `[${msg_cd || '코드없음'}] ${msg1 || '메시지없음'}`;
+    if (msg_cd || msg1) return `[${msg_cd || 'ERROR'}] ${msg1 || '메시지없음'}`;
   }
-  return err.message; // KIS 규격이 아니면 일반 에러 메시지 반환
+  return err.message;
 };
 
+// 💡 API 과부하 방지용 딜레이
+const microSleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+/**
+ * 1. 과거 데이터 (일봉) 조회
+ */
 const getHistoricalData = async (ticker, market = 'KR') => {
   const token = await getValidToken();
   const isKR = market === 'KR';
 
-  // 💡 기관총 방지용 딜레이 함수
-  const microSleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
-
   try {
     if (isKR) {
-      // 🇰🇷 국장 로직
       const url = `${DOMAIN}/uapi/domestic-stock/v1/quotations/inquire-daily-price`;
       const config = {
         headers: {
-          'content-type': 'application/json; charset=utf-8',
+          'content-type': 'application/json',
           authorization: `Bearer ${token}`,
           appkey: APP_KEY,
           appsecret: APP_SECRET,
@@ -73,24 +42,18 @@ const getHistoricalData = async (ticker, market = 'KR') => {
         },
         params: { FID_COND_MRKT_DIV_CODE: 'J', FID_INPUT_ISCD: ticker, FID_PERIOD_DIV_CODE: 'D', FID_ORG_ADJ_PRC: '1' },
       };
-      const response = await axios.get(url, config);
+      await microSleep(1000);
+      const res = await axios.get(url, config);
+      if (res.data.rt_cd === '1') throw new Error(res.data.msg1);
 
-      // 🛡️ [수정됨] KIS 에러 메시지가 왔거나 output 배열이 없을 때의 완벽한 방어
-      if (response.data.rt_cd === '1') {
-        throw new Error(`KIS 응답 에러: ${response.data.msg1}`);
-      }
-      if (!response.data.output || !Array.isArray(response.data.output)) {
-        throw new Error('데이터 없음 (응답에 배열이 존재하지 않습니다)');
-      }
-
-      return response.data.output.map(item => ({
+      return res.data.output.map(item => ({
         date: item.stck_bsop_date, close: Number(item.stck_clpr), high: Number(item.stck_hgpr), low: Number(item.stck_lwpr)
       }));
 
     } else {
-      // 🇺🇸 미장 로직 (수정됨)
+      // 🇺🇸 미장 과거데이터 (공식 TR_ID: HHDFS76240000)
       const url = `${DOMAIN}/uapi/overseas-price/v1/quotations/dailyprice`;
-      let lastApiError = null; // 💡 KIS 찐 에러를 담아둘 변수
+      let lastApiError = null;
 
       const fetchUsData = async (excd) => {
         try {
@@ -100,54 +63,30 @@ const getHistoricalData = async (ticker, market = 'KR') => {
               authorization: `Bearer ${token}`,
               appkey: APP_KEY,
               appsecret: APP_SECRET,
-              tr_id: 'FHKST03030100',
+              tr_id: 'HHDFS76240000', // 수정됨!
               custtype: 'P'
             },
             params: { AUTH: '', EXCD: excd, SYMB: ticker, GUBN: '0', BYMD: '', MODP: '1' },
           };
+          await microSleep(1000);
           const res = await axios.get(url, config);
-
-          // KIS가 200 OK를 주면서 바디에 에러를 담아 보낼 때
-          if (res.data.rt_cd === '1') {
-            throw new Error(`[${res.data.msg_cd}] ${res.data.msg1}`);
-          }
-
-          if (res.data && res.data.output2 && res.data.output2.length > 0) {
-            return res.data.output2;
-          }
+          if (res.data.rt_cd === '1') throw new Error(`[${res.data.msg_cd}] ${res.data.msg1}`);
+          if (res.data && res.data.output2 && res.data.output2.length > 0) return res.data.output2;
           return null;
         } catch (err) {
-          const errMsg = getKisErrorMsg(err);
-          lastApiError = errMsg; // 가장 최근 에러 메시지 저장
-
-          console.log(`⚠️ [US][${ticker}] ${excd} 탐색 실패: ${errMsg}`);
-
-          // 💡 핵심: 단순 '종목 없음(500)'이 아니라 트래픽 초과, 야간 점검 등 치명적 에러면 
-          // 다음 거래소 찌르기를 포기하고 즉시 에러를 던져버립니다!
-          if (errMsg.includes('초과') || errMsg.includes('야간') || errMsg.includes('점검')) {
-            throw new Error(errMsg);
+          lastApiError = getKisErrorMsg(err);
+          if (lastApiError.includes('초과') || lastApiError.includes('야간') || lastApiError.includes('점검')) {
+            throw new Error(lastApiError); // 치명적 에러 시 즉각 중단
           }
-          return null; // 일반적인 종목 미스매치면 다음 거래소로 넘김
+          return null;
         }
       };
 
       let rawData = await fetchUsData('NAS');
+      if (!rawData) { rawData = await fetchUsData('NYS'); }
+      if (!rawData) { rawData = await fetchUsData('AMS'); }
 
-      if (!rawData) {
-        await microSleep(1000);
-        rawData = await fetchUsData('NYS');
-      }
-
-      if (!rawData) {
-        await microSleep(1000);
-        rawData = await fetchUsData('AMS');
-      }
-
-      // 💡 제 맘대로 썼던 뭉뚱그린 메시지 삭제! 
-      // KIS가 던진 날것의 에러가 있으면 그걸 던지고, 아니면 데이터 없음으로 처리합니다.
-      if (!rawData) {
-        throw new Error(lastApiError || `해당 티커를 NAS/NYS/AMS에서 찾을 수 없습니다.`);
-      }
+      if (!rawData) throw new Error(lastApiError || `해당 티커를 NAS/NYS/AMS에서 찾을 수 없습니다.`);
 
       return rawData.map(item => ({
         date: item.xymd, close: Number(item.clos), high: Number(item.high), low: Number(item.low)
@@ -161,194 +100,211 @@ const getHistoricalData = async (ticker, market = 'KR') => {
 };
 
 /**
- * 3. 주문 가능 예수금 조회 (국내/해외 통합)
- * @returns {number} 매수 가능한 현금 (KR: 원화, US: 달러)
+ * 2. 현재가 조회
+ */
+const getCurrentPrice = async (ticker, market = 'KR') => {
+  const token = await getValidToken();
+  const isKR = market === 'KR';
+
+  try {
+    if (isKR) {
+      const url = `${DOMAIN}/uapi/domestic-stock/v1/quotations/inquire-price`;
+      const config = {
+        headers: {
+          'content-type': 'application/json',
+          authorization: `Bearer ${token}`,
+          appkey: APP_KEY,
+          appsecret: APP_SECRET,
+          tr_id: 'FHKST01010100',
+        },
+        params: { FID_COND_MRKT_DIV_CODE: 'J', FID_INPUT_ISCD: ticker },
+      };
+      await microSleep(1000);
+      const res = await axios.get(url, config);
+      if (res.data.rt_cd === '1') throw new Error(res.data.msg1);
+      return Number(res.data.output.stck_prpr);
+
+    } else {
+      // 🇺🇸 미장 현재가 (공식 TR_ID: HHDFS00000300)
+      const url = `${DOMAIN}/uapi/overseas-price/v1/quotations/price`;
+      let lastApiError = null;
+
+      const fetchUsPrice = async (excd) => {
+        try {
+          const config = {
+            headers: {
+              'content-type': 'application/json',
+              authorization: `Bearer ${token}`,
+              appkey: APP_KEY,
+              appsecret: APP_SECRET,
+              tr_id: 'HHDFS00000300', // 수정됨!
+              custtype: 'P'
+            },
+            params: { AUTH: '', EXCD: excd, SYMB: ticker },
+          };
+          await microSleep(1000);
+          const res = await axios.get(url, config);
+          if (res.data.rt_cd === '1') throw new Error(`[${res.data.msg_cd}] ${res.data.msg1}`);
+          if (res.data && res.data.output) return Number(res.data.output.last); // 수정됨! (last 필드)
+          return null;
+        } catch (err) {
+          lastApiError = getKisErrorMsg(err);
+          if (lastApiError.includes('초과') || lastApiError.includes('점검')) throw new Error(lastApiError);
+          return null;
+        }
+      };
+
+      let price = await fetchUsPrice('NAS');
+      if (price === null) { price = await fetchUsPrice('NYS'); }
+      if (price === null) { price = await fetchUsPrice('AMS'); }
+
+      if (price === null) throw new Error(lastApiError || `현재가 조회 실패`);
+      return price;
+    }
+  } catch (error) {
+    throw new Error(getKisErrorMsg(error));
+  }
+};
+
+/**
+ * 3. 예수금(매수가능현금) 조회
  */
 const getAvailableCash = async (market = 'KR') => {
   const token = await getValidToken();
   const isKR = market === 'KR';
 
-  // .env에서 계좌번호 가져오기
-  const CANO = process.env.KIS_CANO;
-  const ACNT_PRDT_CD = process.env.KIS_ACNT_PRDT_CD;
-
   try {
-    // 모의투자 기준 잔고조회 TR ID
-    const trId = isKR ? 'VTTC8908R' : 'VTTS3007R';
+    // 💡 실전/모의 동적 TR_ID 스위칭 적용
+    const trId = isKR
+      ? (IS_MOCK ? 'VTTC8908R' : 'TTTC8908R')
+      : (IS_MOCK ? 'VTRP6504R' : 'CTRP6504R');
+
     const url = isKR
       ? `${DOMAIN}/uapi/domestic-stock/v1/trading/inquire-psbl-order`
-      : `${DOMAIN}/uapi/overseas-stock/v1/trading/inquire-psbl-order`;
+      : `${DOMAIN}/uapi/overseas-stock/v1/trading/inquire-present-balance`;
 
-    const config = {
-      headers: {
-        'content-type': 'application/json',
-        authorization: `Bearer ${token}`,
-        appkey: APP_KEY,
-        appsecret: APP_SECRET,
-        tr_id: trId,
-      },
-      params: isKR
-        ? {
-          CANO,
-          ACNT_PRDT_CD,
-          PDNO: '',
-          ORD_UNPR: '',
-          ORD_DVSN: '01',
-          CMA_EVLU_AMT_ICLD_YN: 'N',
-          OVRS_ICLD_YN: 'N'
-        }
-        : {
-          CANO,
-          ACNT_PRDT_CD,
-          OVRS_EXCG_CD: 'NAS',
-          ITEM_CD: '',
-          PRCR_STAT_EXCG_OPE_DVSN_CD: ''
-        }
-    };
-
-    const response = await axios.get(url, config);
-
-    // 국장은 '주문가능현금(ord_psbl_cash)', 미장은 '외화주문가능금액(frcr_ord_psbl_amt1)'
-    const balance = isKR
-      ? Number(response.data.output.ord_psbl_cash)
-      : Number(response.data.output.frcr_ord_psbl_amt1);
-
-    return balance;
-  } catch (error) {
-    console.error(`❌ [${market}] 예수금 조회 실패:`, error.response ? error.response.data : error.message);
-    throw error;
-  }
-};
-
-/**
- * 4. 주식 주문 실행 (국내/해외 통합 - 모의투자 전용)
- * @param {string} ticker - 종목코드
- * @param {number} quantity - 주문 수량
- * @param {number} price - 주문 단가 (국장은 0 입력 시 시장가)
- * @param {string} market - 'KR' 또는 'US'
- * @param {string} side - 'BUY' 또는 'SELL'
- */
-const executeOrder = async (ticker, quantity, price, market = 'KR', side = 'BUY') => {
-  const token = await getValidToken();
-  const isKR = market === 'KR';
-
-  const CANO = process.env.KIS_CANO;
-  const ACNT_PRDT_CD = process.env.KIS_ACNT_PRDT_CD;
-
-  try {
-    // 1. TR ID 분기 (모의투자용)
-    let trId = '';
-    if (isKR) {
-      trId = side === 'BUY' ? 'VTTC0802U' : 'VTTC0801U'; // 국장 현금 매수/매도
-    } else {
-      trId = side === 'BUY' ? 'VTTT1002U' : 'VTTT1006U'; // 미장 해외주식 매수/매도
-    }
-
-    // 2. URL 분기
-    const url = isKR
-      ? `${DOMAIN}/uapi/domestic-stock/v1/trading/order-cash`
-      : `${DOMAIN}/uapi/overseas-stock/v1/trading/order`;
-
-    // 3. 파라미터 분기
-    // 국장은 확실한 체결을 위해 '시장가(01)'로 쏘고, 단가를 '0'으로 보냅니다.
-    // 미장은 거래소마다 시장가 지원 여부가 달라, 현재가를 넣은 '지정가(00)'로 쏩니다.
-    const data = isKR
-      ? {
-        CANO,
-        ACNT_PRDT_CD,
-        PDNO: ticker,
-        ORD_DVSN: '01', // 01: 시장가
-        ORD_QTY: String(quantity),
-        ORD_UNPR: '0',  // 시장가는 단가 0
-      }
+    const params = isKR
+      ? { CANO, ACNT_PRDT_CD, PDNO: '', ORD_UNPR: '', ORD_DVSN: '01', CMA_EVLU_AMT_ICLD_YN: 'N', OVRS_ICLD_YN: 'N' }
       : {
         CANO,
         ACNT_PRDT_CD,
-        OVRS_EXCG_CD: 'NAS', // 기본 나스닥
-        PDNO: ticker,
-        ORD_QTY: String(quantity),
-        OVRS_ORD_UNPR: String(price), // 미장은 지정가 단가 입력
-        ORD_SVR_DVSN_CD: '0',
-        ORD_DVSN: '00', // 00: 지정가
+        WCRC_FRCR_DVSN_CD: '02', // 02: 외화
+        NATN_CD: '840',          // 840: 미국
+        TR_MKET_CD: '00',
+        INQR_DVSN_CD: '00'
       };
 
     const config = {
-      headers: {
-        'content-type': 'application/json',
-        authorization: `Bearer ${token}`,
-        appkey: APP_KEY,
-        appsecret: APP_SECRET,
-        tr_id: trId,
-      }
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${token}`, appkey: APP_KEY, appsecret: APP_SECRET, tr_id: trId },
+      params
     };
 
-    // 주문은 GET이 아니라 POST 요청입니다!
-    const response = await axios.post(url, data, config);
+    await microSleep(1000);
+    const res = await axios.get(url, config);
+    if (res.data.rt_cd === '1') throw new Error(res.data.msg1);
 
-    // KIS API는 실패해도 200 응답을 주고, 내부 rt_cd 값으로 에러를 표현하는 경우가 있습니다.
-    if (response.data.rt_cd !== '0') {
-      throw new Error(response.data.msg1);
-    }
+    return isKR ? Number(res.data.output.ord_psbl_cash) : Number(res.data.output3.frcr_evlu_tota);
 
-    return response.data;
   } catch (error) {
-    console.error(`❌ [${market}][${ticker}] 주문 에러:`, error.message);
-    throw error;
+    console.error(`❌ [${market}] 예수금 조회 에러: ${getKisErrorMsg(error)}`);
+    return 0;
   }
 };
 
 /**
- * 5. 현재 보유 종목 및 수량 조회 (국내/해외 통합 - 모의투자)
- * @returns {Object} { '종목코드': 보유수량 } 형태의 객체 반환
+ * 4. 현재 보유 종목 및 수량 조회
  */
 const getCurrentHoldings = async (market = 'KR') => {
   const token = await getValidToken();
   const isKR = market === 'KR';
 
-  const CANO = process.env.KIS_CANO;
-  const ACNT_PRDT_CD = process.env.KIS_ACNT_PRDT_CD;
-
   try {
-    const trId = isKR ? 'VTTC8434R' : 'VTTS3012R';
+    const trId = isKR
+      ? (IS_MOCK ? 'VTTC8434R' : 'TTTC8434R')
+      : (IS_MOCK ? 'VTTS3012R' : 'TTTS3012R');
+
     const url = isKR
       ? `${DOMAIN}/uapi/domestic-stock/v1/trading/inquire-balance`
       : `${DOMAIN}/uapi/overseas-stock/v1/trading/inquire-balance`;
 
-    // (config 부분은 기존과 100% 동일하므로 생략 없이 기존 코드 유지)
+    const params = isKR
+      ? { CANO, ACNT_PRDT_CD, AFHR_FLPR_YN: 'N', OFL_YN: '', INQR_DVSN: '01', UNPR_DVSN: '01', FUND_STTL_ICLD_YN: 'N', FNCG_AMT_AUTO_RDPT_YN: 'N', PRCS_DVSN: '00', CTX_AREA_FK100: '', CTX_AREA_NK100: '' }
+      : { CANO, ACNT_PRDT_CD, OVRS_EXCG_CD: 'NASD', TR_CRCY_CD: 'USD', CTX_AREA_FK200: '', CTX_AREA_NK200: '' };
+
     const config = {
-      headers: {
-        'content-type': 'application/json',
-        authorization: `Bearer ${token}`,
-        appkey: APP_KEY,
-        appsecret: APP_SECRET,
-        tr_id: trId,
-      },
-      params: isKR
-        ? { CANO, ACNT_PRDT_CD, AFHR_FLPR_YN: 'N', OFL_YN: '', INQR_DVSN: '01', UNPR_DVSN: '01', FUND_STTL_ICLD_YN: 'N', FNCG_AMT_AUTO_RDPT_YN: 'N', PRCS_DVSN: '00', CTX_AREA_FK100: '', CTX_AREA_NK100: '' }
-        : { CANO, ACNT_PRDT_CD, OVRS_EXCG_CD: 'NAS', TR_CRCY_CD: 'USD', CTX_AREA_FK200: '', CTX_AREA_NK200: '' }
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${token}`, appkey: APP_KEY, appsecret: APP_SECRET, tr_id: trId },
+      params
     };
 
-    const response = await axios.get(url, config);
-    const holdList = response.data.output1;
+    await microSleep(1000);
+    const res = await axios.get(url, config);
+    if (res.data.rt_cd === '1') throw new Error(res.data.msg1);
 
     const holdingsMap = {};
-    if (!holdList || holdList.length === 0) return holdingsMap;
-
-    // 💡 변경된 부분: 수량을 객체 매핑 형태로 저장합니다.
     if (isKR) {
-      holdList.forEach(item => {
+      (res.data.output1 || []).forEach(item => {
         if (Number(item.hldg_qty) > 0) holdingsMap[item.pdno] = Number(item.hldg_qty);
       });
     } else {
-      holdList.forEach(item => {
+      (res.data.output1 || []).forEach(item => {
         if (Number(item.ovrs_cblc_qty) > 0) holdingsMap[item.ovrs_pdno] = Number(item.ovrs_cblc_qty);
       });
     }
     return holdingsMap;
   } catch (error) {
-    console.error(`❌ [${market}] 잔고 조회 에러:`, error.message);
+    console.error(`❌ [${market}] 잔고 조회 에러: ${getKisErrorMsg(error)}`);
     return {};
   }
 };
 
-module.exports = { getCurrentPrice, getHistoricalData, getAvailableCash, executeOrder, getCurrentHoldings };
+/**
+ * 5. 매수 / 매도 주문 실행
+ */
+const executeOrder = async (ticker, quantity, price, market, position) => {
+  const token = await getValidToken();
+  const isKR = market === 'KR';
+
+  try {
+    let url, trId, body;
+
+    if (isKR) {
+      url = `${DOMAIN}/uapi/domestic-stock/v1/trading/order-cash`;
+      if (position === 'BUY') trId = IS_MOCK ? 'VTTC0012U' : 'TTTC0012U';
+      else trId = IS_MOCK ? 'VTTC0011U' : 'TTTC0011U';
+
+      body = { CANO, ACNT_PRDT_CD, PDNO: ticker, ORD_DVSN: '01', ORD_QTY: String(quantity), ORD_UNPR: '0' };
+    } else {
+      url = `${DOMAIN}/uapi/overseas-stock/v1/trading/order`;
+
+      // 💡 [핵심] 미장 매도의 경우 모의투자 예외 케이스(VTTT1001U) 완벽 반영
+      if (position === 'BUY') trId = IS_MOCK ? 'VTTT1002U' : 'TTTT1002U';
+      else trId = IS_MOCK ? 'VTTT1001U' : 'TTTT1006U';
+
+      body = {
+        CANO, ACNT_PRDT_CD, OVRS_EXCG_CD: 'NASD', PDNO: ticker,
+        ORD_DVSN: '00', ORD_QTY: String(quantity), OVRS_ORD_UNPR: String(price),
+        SLL_TYPE: '00', ORD_SVR_DVSN_CD: '0'
+      };
+    }
+
+    const config = {
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${token}`, appkey: APP_KEY, appsecret: APP_SECRET, tr_id: trId }
+    };
+
+    await microSleep(1000);
+    const res = await axios.post(url, body, config);
+    if (res.data.rt_cd === '1') throw new Error(res.data.msg1);
+    return res.data;
+
+  } catch (error) {
+    throw new Error(getKisErrorMsg(error));
+  }
+};
+
+module.exports = {
+  getHistoricalData,
+  getCurrentPrice,
+  getAvailableCash,
+  getCurrentHoldings,
+  executeOrder
+};
