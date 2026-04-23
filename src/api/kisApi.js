@@ -7,10 +7,16 @@ const DOMAIN = process.env.KIS_DOMAIN;
 const CANO = process.env.KIS_ACCOUNT_NO;
 const ACNT_PRDT_CD = process.env.KIS_ACCOUNT_PRDT;
 
-// 💡 1. 실전투자 / 모의투자 환경 자동 판별
+// 실전투자 / 모의투자 환경 자동 판별
 const IS_MOCK = DOMAIN.includes('openapivts');
 
-// 💡 KIS 전용 에러 메시지 추출 헬퍼
+// 종목별 거래소 캐시 (US 종목 → NAS/NYS/AMS)
+const exchangeCache = new Map();
+
+// 날짜를 YYYYMMDD 형식으로 변환
+const formatDate = d => d.toISOString().slice(0, 10).replace(/-/g, '');
+
+// KIS 전용 에러 메시지 추출 헬퍼
 const getKisErrorMsg = (err) => {
   if (err.response && err.response.data) {
     const { msg_cd, msg1 } = err.response.data;
@@ -19,11 +25,14 @@ const getKisErrorMsg = (err) => {
   return err.message;
 };
 
-// 💡 API 과부하 방지용 딜레이
+// API 과부하 방지용 딜레이
 const microSleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 /**
  * 1. 과거 데이터 (일봉) 조회
+ * - KR: FHKST03010100 (inquire-daily-itemchartprice) — 날짜 범위 지정으로 충분한 데이터 확보
+ * - US: HHDFS76240000 (dailyprice) — NAS → NYS → AMS 순 탐색
+ * 반환 데이터는 오름차순(oldest→newest)으로 정렬됨
  */
 const getHistoricalData = async (ticker, market = 'KR') => {
   const token = await getValidToken();
@@ -31,27 +40,43 @@ const getHistoricalData = async (ticker, market = 'KR') => {
 
   try {
     if (isKR) {
-      const url = `${DOMAIN}/uapi/domestic-stock/v1/quotations/inquire-daily-price`;
+      // 6개월 치 일봉 데이터 요청 (일목균형표 계산에 최소 78개 필요)
+      const endDate = new Date();
+      const startDate = new Date();
+      startDate.setMonth(startDate.getMonth() - 6);
+
+      const url = `${DOMAIN}/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice`;
       const config = {
         headers: {
           'content-type': 'application/json',
           authorization: `Bearer ${token}`,
           appkey: APP_KEY,
           appsecret: APP_SECRET,
-          tr_id: 'FHKST01010400',
+          tr_id: 'FHKST03010100',
         },
-        params: { FID_COND_MRKT_DIV_CODE: 'J', FID_INPUT_ISCD: ticker, FID_PERIOD_DIV_CODE: 'D', FID_ORG_ADJ_PRC: '1' },
+        params: {
+          FID_COND_MRKT_DIV_CODE: 'J',
+          FID_INPUT_ISCD: ticker,
+          FID_INPUT_DATE_1: formatDate(startDate),
+          FID_INPUT_DATE_2: formatDate(endDate),
+          FID_PERIOD_DIV_CODE: 'D',
+          FID_ORG_ADJ_PRC: '0',
+        },
       };
       await microSleep(1000);
       const res = await axios.get(url, config);
       if (res.data.rt_cd === '1') throw new Error(res.data.msg1);
 
-      return res.data.output.map(item => ({
-        date: item.stck_bsop_date, close: Number(item.stck_clpr), high: Number(item.stck_hgpr), low: Number(item.stck_lwpr)
-      }));
+      // KIS API는 최신순(내림차순)으로 반환 → .reverse()로 오름차순 변환
+      return (res.data.output2 || []).map(item => ({
+        date: item.stck_bsop_date,
+        close: Number(item.stck_clpr),
+        high: Number(item.stck_hgpr),
+        low: Number(item.stck_lwpr),
+      })).reverse();
 
     } else {
-      // 🇺🇸 미장 과거데이터 (공식 TR_ID: HHDFS76240000)
+      // 미장 과거데이터
       const url = `${DOMAIN}/uapi/overseas-price/v1/quotations/dailyprice`;
       let lastApiError = null;
 
@@ -63,20 +88,23 @@ const getHistoricalData = async (ticker, market = 'KR') => {
               authorization: `Bearer ${token}`,
               appkey: APP_KEY,
               appsecret: APP_SECRET,
-              tr_id: 'HHDFS76240000', // 수정됨!
-              custtype: 'P'
+              tr_id: 'HHDFS76240000',
+              custtype: 'P',
             },
             params: { AUTH: '', EXCD: excd, SYMB: ticker, GUBN: '0', BYMD: '', MODP: '1' },
           };
           await microSleep(1000);
           const res = await axios.get(url, config);
           if (res.data.rt_cd === '1') throw new Error(`[${res.data.msg_cd}] ${res.data.msg1}`);
-          if (res.data && res.data.output2 && res.data.output2.length > 0) return res.data.output2;
+          if (res.data && res.data.output2 && res.data.output2.length > 0) {
+            exchangeCache.set(ticker, excd); // 거래소 코드 캐시
+            return res.data.output2;
+          }
           return null;
         } catch (err) {
           lastApiError = getKisErrorMsg(err);
           if (lastApiError.includes('초과') || lastApiError.includes('야간') || lastApiError.includes('점검')) {
-            throw new Error(lastApiError); // 치명적 에러 시 즉각 중단
+            throw new Error(lastApiError);
           }
           return null;
         }
@@ -88,9 +116,13 @@ const getHistoricalData = async (ticker, market = 'KR') => {
 
       if (!rawData) throw new Error(lastApiError || `해당 티커를 NAS/NYS/AMS에서 찾을 수 없습니다.`);
 
+      // KIS API는 최신순(내림차순)으로 반환 → .reverse()로 오름차순 변환
       return rawData.map(item => ({
-        date: item.xymd, close: Number(item.clos), high: Number(item.high), low: Number(item.low)
-      }));
+        date: item.xymd,
+        close: Number(item.clos),
+        high: Number(item.high),
+        low: Number(item.low),
+      })).reverse();
     }
   } catch (error) {
     const finalErrMsg = getKisErrorMsg(error);
@@ -125,7 +157,6 @@ const getCurrentPrice = async (ticker, market = 'KR') => {
       return Number(res.data.output.stck_prpr);
 
     } else {
-      // 🇺🇸 미장 현재가 (공식 TR_ID: HHDFS00000300)
       const url = `${DOMAIN}/uapi/overseas-price/v1/quotations/price`;
       let lastApiError = null;
 
@@ -137,15 +168,15 @@ const getCurrentPrice = async (ticker, market = 'KR') => {
               authorization: `Bearer ${token}`,
               appkey: APP_KEY,
               appsecret: APP_SECRET,
-              tr_id: 'HHDFS00000300', // 수정됨!
-              custtype: 'P'
+              tr_id: 'HHDFS00000300',
+              custtype: 'P',
             },
             params: { AUTH: '', EXCD: excd, SYMB: ticker },
           };
           await microSleep(1000);
           const res = await axios.get(url, config);
           if (res.data.rt_cd === '1') throw new Error(`[${res.data.msg_cd}] ${res.data.msg1}`);
-          if (res.data && res.data.output) return Number(res.data.output.last); // 수정됨! (last 필드)
+          if (res.data && res.data.output) return Number(res.data.output.last);
           return null;
         } catch (err) {
           lastApiError = getKisErrorMsg(err);
@@ -154,7 +185,10 @@ const getCurrentPrice = async (ticker, market = 'KR') => {
         }
       };
 
-      let price = await fetchUsPrice('NAS');
+      // 캐시에 거래소가 있으면 바로 조회, 없으면 순차 탐색
+      const cachedExcd = exchangeCache.get(ticker);
+      let price = cachedExcd ? await fetchUsPrice(cachedExcd) : null;
+      if (price === null) { price = await fetchUsPrice('NAS'); }
       if (price === null) { price = await fetchUsPrice('NYS'); }
       if (price === null) { price = await fetchUsPrice('AMS'); }
 
@@ -168,13 +202,14 @@ const getCurrentPrice = async (ticker, market = 'KR') => {
 
 /**
  * 3. 예수금(매수가능현금) 조회
+ * - KR: ord_psbl_cash (원화 주문가능금액)
+ * - US: output2에서 USD 항목의 frcs_ord_psbl_amt (외화주문가능금액)
  */
 const getAvailableCash = async (market = 'KR') => {
   const token = await getValidToken();
   const isKR = market === 'KR';
 
   try {
-    // 💡 실전/모의 동적 TR_ID 스위칭 적용
     const trId = isKR
       ? (IS_MOCK ? 'VTTC8908R' : 'TTTC8908R')
       : (IS_MOCK ? 'VTRP6504R' : 'CTRP6504R');
@@ -188,22 +223,32 @@ const getAvailableCash = async (market = 'KR') => {
       : {
         CANO,
         ACNT_PRDT_CD,
-        WCRC_FRCR_DVSN_CD: '02', // 02: 외화
-        NATN_CD: '840',          // 840: 미국
+        WCRC_FRCR_DVSN_CD: '02',
+        NATN_CD: '840',
         TR_MKET_CD: '00',
-        INQR_DVSN_CD: '00'
+        INQR_DVSN_CD: '00',
       };
 
     const config = {
       headers: { 'content-type': 'application/json', authorization: `Bearer ${token}`, appkey: APP_KEY, appsecret: APP_SECRET, tr_id: trId },
-      params
+      params,
     };
 
     await microSleep(1000);
     const res = await axios.get(url, config);
     if (res.data.rt_cd === '1') throw new Error(res.data.msg1);
 
-    return isKR ? Number(res.data.output.ord_psbl_cash) : Number(res.data.output3.frcr_evlu_tota);
+    if (isKR) {
+      return Number(res.data.output.ord_psbl_cash);
+    } else {
+      // output2 배열에서 USD 항목 찾아 주문가능금액 반환
+      const usdEntry = (res.data.output2 || []).find(o => o.crcy_cd === 'USD');
+      if (usdEntry) {
+        return Number(usdEntry.frcs_ord_psbl_amt || usdEntry.ovrs_ord_psbl_amt || 0);
+      }
+      // fallback: output3 요약값 (USD 환산 순자산 근사치)
+      return Number(res.data.output3?.frcr_evlu_tota || 0);
+    }
 
   } catch (error) {
     console.error(`❌ [${market}] 예수금 조회 에러: ${getKisErrorMsg(error)}`);
@@ -213,10 +258,14 @@ const getAvailableCash = async (market = 'KR') => {
 
 /**
  * 4. 현재 보유 종목 및 수량 조회
+ * - KR: 단일 조회
+ * - US: NASD / NYSE / AMEX 세 거래소 모두 조회 후 합산
  */
 const getCurrentHoldings = async (market = 'KR') => {
   const token = await getValidToken();
   const isKR = market === 'KR';
+
+  const holdingsMap = {};
 
   try {
     const trId = isKR
@@ -227,38 +276,44 @@ const getCurrentHoldings = async (market = 'KR') => {
       ? `${DOMAIN}/uapi/domestic-stock/v1/trading/inquire-balance`
       : `${DOMAIN}/uapi/overseas-stock/v1/trading/inquire-balance`;
 
-    const params = isKR
-      ? { CANO, ACNT_PRDT_CD, AFHR_FLPR_YN: 'N', OFL_YN: '', INQR_DVSN: '01', UNPR_DVSN: '01', FUND_STTL_ICLD_YN: 'N', FNCG_AMT_AUTO_RDPT_YN: 'N', PRCS_DVSN: '00', CTX_AREA_FK100: '', CTX_AREA_NK100: '' }
-      : { CANO, ACNT_PRDT_CD, OVRS_EXCG_CD: 'NASD', TR_CRCY_CD: 'USD', CTX_AREA_FK200: '', CTX_AREA_NK200: '' };
-
-    const config = {
-      headers: { 'content-type': 'application/json', authorization: `Bearer ${token}`, appkey: APP_KEY, appsecret: APP_SECRET, tr_id: trId },
-      params
-    };
-
-    await microSleep(1000);
-    const res = await axios.get(url, config);
-    if (res.data.rt_cd === '1') throw new Error(res.data.msg1);
-
-    const holdingsMap = {};
     if (isKR) {
+      const params = { CANO, ACNT_PRDT_CD, AFHR_FLPR_YN: 'N', OFL_YN: '', INQR_DVSN: '01', UNPR_DVSN: '01', FUND_STTL_ICLD_YN: 'N', FNCG_AMT_AUTO_RDPT_YN: 'N', PRCS_DVSN: '00', CTX_AREA_FK100: '', CTX_AREA_NK100: '' };
+      const config = { headers: { 'content-type': 'application/json', authorization: `Bearer ${token}`, appkey: APP_KEY, appsecret: APP_SECRET, tr_id: trId }, params };
+      await microSleep(1000);
+      const res = await axios.get(url, config);
+      if (res.data.rt_cd === '1') throw new Error(res.data.msg1);
       (res.data.output1 || []).forEach(item => {
         if (Number(item.hldg_qty) > 0) holdingsMap[item.pdno] = Number(item.hldg_qty);
       });
     } else {
-      (res.data.output1 || []).forEach(item => {
-        if (Number(item.ovrs_cblc_qty) > 0) holdingsMap[item.ovrs_pdno] = Number(item.ovrs_cblc_qty);
-      });
+      // 미장은 세 거래소를 모두 조회해야 전체 보유 종목 파악 가능
+      for (const exchCd of ['NASD', 'NYSE', 'AMEX']) {
+        try {
+          const params = { CANO, ACNT_PRDT_CD, OVRS_EXCG_CD: exchCd, TR_CRCY_CD: 'USD', CTX_AREA_FK200: '', CTX_AREA_NK200: '' };
+          const config = { headers: { 'content-type': 'application/json', authorization: `Bearer ${token}`, appkey: APP_KEY, appsecret: APP_SECRET, tr_id: trId }, params };
+          await microSleep(500);
+          const res = await axios.get(url, config);
+          if (res.data.rt_cd !== '1') {
+            (res.data.output1 || []).forEach(item => {
+              if (Number(item.ovrs_cblc_qty) > 0) holdingsMap[item.ovrs_pdno] = Number(item.ovrs_cblc_qty);
+            });
+          }
+        } catch (e) {
+          console.error(`⚠️ [US][${exchCd}] 잔고 조회 에러: ${getKisErrorMsg(e)}`);
+        }
+      }
     }
+
     return holdingsMap;
   } catch (error) {
     console.error(`❌ [${market}] 잔고 조회 에러: ${getKisErrorMsg(error)}`);
-    return {};
+    return holdingsMap;
   }
 };
 
 /**
  * 5. 매수 / 매도 주문 실행
+ * - US 주문 시 exchangeCache에 저장된 거래소 코드 사용
  */
 const executeOrder = async (ticker, quantity, price, market, position) => {
   const token = await getValidToken();
@@ -276,19 +331,22 @@ const executeOrder = async (ticker, quantity, price, market, position) => {
     } else {
       url = `${DOMAIN}/uapi/overseas-stock/v1/trading/order`;
 
-      // 💡 [핵심] 미장 매도의 경우 모의투자 예외 케이스(VTTT1001U) 완벽 반영
       if (position === 'BUY') trId = IS_MOCK ? 'VTTT1002U' : 'TTTT1002U';
       else trId = IS_MOCK ? 'VTTT1001U' : 'TTTT1006U';
 
+      // 캐시된 거래소 코드 활용 (없으면 NASD 기본값)
+      const exchCodeMap = { NAS: 'NASD', NYS: 'NYSE', AMS: 'AMEX' };
+      const ovrsExcgCd = exchCodeMap[exchangeCache.get(ticker)] || 'NASD';
+
       body = {
-        CANO, ACNT_PRDT_CD, OVRS_EXCG_CD: 'NASD', PDNO: ticker,
+        CANO, ACNT_PRDT_CD, OVRS_EXCG_CD: ovrsExcgCd, PDNO: ticker,
         ORD_DVSN: '00', ORD_QTY: String(quantity), OVRS_ORD_UNPR: String(price),
-        SLL_TYPE: '00', ORD_SVR_DVSN_CD: '0'
+        SLL_TYPE: '00', ORD_SVR_DVSN_CD: '0',
       };
     }
 
     const config = {
-      headers: { 'content-type': 'application/json', authorization: `Bearer ${token}`, appkey: APP_KEY, appsecret: APP_SECRET, tr_id: trId }
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${token}`, appkey: APP_KEY, appsecret: APP_SECRET, tr_id: trId },
     };
 
     await microSleep(1000);
@@ -306,5 +364,5 @@ module.exports = {
   getCurrentPrice,
   getAvailableCash,
   getCurrentHoldings,
-  executeOrder
+  executeOrder,
 };

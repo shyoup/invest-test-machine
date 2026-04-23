@@ -54,7 +54,7 @@ const analyzeSignal = (ohlcvData, ticker) => {
   const rsi = getLatestRSI(closes);
   const ichimoku = getLatestIchimoku(highs, lows);
 
-  if (!rsi || !ichimoku) return { state: 'HOLD', message: '' }; // 데이터가 부족해 계산이 안 된 경우 방어 로직
+  if (rsi == null || !ichimoku) return { state: 'HOLD', message: `⏸️ [${ticker}] 데이터 부족 — HOLD` };
 
   const cloudTop = Math.max(ichimoku.spanA, ichimoku.spanB);
   const cloudBottom = Math.min(ichimoku.spanA, ichimoku.spanB);

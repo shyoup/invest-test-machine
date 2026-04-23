@@ -3,7 +3,7 @@ const path = require('path');
 const axios = require('axios');
 
 const TOKEN_PATH = path.join(__dirname, '../../token.json');
-const DOMAIN = 'https://openapivts.koreainvestment.com:29443';
+const DOMAIN = process.env.KIS_DOMAIN || 'https://openapivts.koreainvestment.com:29443';
 
 /**
  * 로컬 파일에서 토큰 읽기
