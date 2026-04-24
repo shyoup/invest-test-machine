@@ -19,9 +19,9 @@ yarn-error.log*
 # 4. 🤖 봇 상태 및 캐시 데이터
 # 서버에서 실시간으로 변하는 파일들이므로 Git으로 덮어씌워지면 안 됩니다.
 watchlist.json
-*.bak_* # watchlist.json 파싱 에러 시 생성되는 백업 파일
-token.json        # KIS API 토큰 캐시 파일 (이름을 다르게 하셨다면 그 이름을 적어주세요)
+token.json
 settings.json
+*.bak_* # watchlist.json 파싱 에러 시 생성되는 백업 파일
 
 # 5. OS 및 에디터 찌꺼기 파일
 .DS_Store
