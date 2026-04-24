@@ -57,7 +57,13 @@ const runScanner = async (market) => {
 
             const availableCash = await getAvailableCash(market);
             const targetAmount = Math.floor(availableCash * (weight / 100));
-            const targetQuantity = Math.floor(targetAmount / currentPrice);
+            let targetQuantity = Math.floor(targetAmount / currentPrice);
+
+            // 비중 적용 금액으로 1주 미만이지만 실제 현금으로 1주 이상 살 수 있으면 1주로 fallback
+            if (targetQuantity === 0 && availableCash >= currentPrice) {
+              targetQuantity = 1;
+              await sendMessage(`ℹ️ <b>[비중 조정]</b> <code>${ticker}</code> — 비중(${weight}%) 적용금액 ${targetAmount.toLocaleString()}${currency}으로 1주 미만\n→ 최소 1주로 매수합니다.`);
+            }
 
             if (targetQuantity > 0) {
               try {
@@ -69,7 +75,8 @@ const runScanner = async (market) => {
                 await sendMessage(`❌ <b>[매수 주문 실패]</b>\n- 종목: <code>${ticker}</code>\n- 사유: <code>${err.message}</code>`);
               }
             } else {
-              await sendMessage(`⚠️ <b>[매수 보류]</b> 예수금 부족 (목표: ${targetAmount.toLocaleString()}${currency})`);
+              // 현금 자체가 부족한 경우 (비중 × 현금 < 1주 AND 총 현금 < 1주)
+              await sendMessage(`⚠️ <b>[매수 보류]</b> <code>${ticker}</code> — 예수금 ${availableCash.toLocaleString()}${currency}으로 1주(${currentPrice.toLocaleString()}${currency}) 매수 불가`);
             }
           }
 
