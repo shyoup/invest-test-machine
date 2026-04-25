@@ -70,6 +70,7 @@ const getHistoricalData = async (ticker, market = 'KR') => {
       // KIS API는 최신순(내림차순)으로 반환 → .reverse()로 오름차순 변환
       return (res.data.output2 || []).map(item => ({
         date: item.stck_bsop_date,
+        open: Number(item.stck_oprc),
         close: Number(item.stck_clpr),
         high: Number(item.stck_hgpr),
         low: Number(item.stck_lwpr),
@@ -119,6 +120,7 @@ const getHistoricalData = async (ticker, market = 'KR') => {
       // KIS API는 최신순(내림차순)으로 반환 → .reverse()로 오름차순 변환
       return rawData.map(item => ({
         date: item.xymd,
+        open: Number(item.open),
         close: Number(item.clos),
         high: Number(item.high),
         low: Number(item.low),
@@ -241,11 +243,6 @@ const getAvailableCash = async (market = 'KR') => {
     if (isKR) {
       return Number(res.data.output.ord_psbl_cash);
     } else {
-      // output2 배열에서 USD 항목 찾아 주문가능금액 반환
-      const usdEntry = (res.data.output2 || []).find(o => o.crcy_cd === 'USD');
-      if (usdEntry) {
-        return Number(usdEntry.frcs_ord_psbl_amt || usdEntry.ovrs_ord_psbl_amt || 0);
-      }
       // fallback: output3 요약값 (USD 환산 순자산 근사치)
       return Number(res.data.output3?.frcr_evlu_tota || 0);
     }
@@ -291,7 +288,7 @@ const getCurrentHoldings = async (market = 'KR') => {
         try {
           const params = { CANO, ACNT_PRDT_CD, OVRS_EXCG_CD: exchCd, TR_CRCY_CD: 'USD', CTX_AREA_FK200: '', CTX_AREA_NK200: '' };
           const config = { headers: { 'content-type': 'application/json', authorization: `Bearer ${token}`, appkey: APP_KEY, appsecret: APP_SECRET, tr_id: trId }, params };
-          await microSleep(500);
+          await microSleep(1000);
           const res = await axios.get(url, config);
           if (res.data.rt_cd !== '1') {
             (res.data.output1 || []).forEach(item => {
