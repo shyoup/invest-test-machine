@@ -9,6 +9,31 @@ const { analyzeVBSignal, clearDailyCache, readVBPositions, recordVBBuy, removeVB
 const sleep = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); });
 
 // ─────────────────────────────────────────
+// 미국 서머타임(DST) / 시장 개장 여부 판별
+// Node.js 내장 Intl API 활용 — 외부 라이브러리 불필요
+// DST 일정은 법으로 고정: 3월 두 번째 일요일 ~ 11월 첫 번째 일요일
+// ─────────────────────────────────────────
+const getETTimeParts = (date = new Date()) =>
+  new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    weekday: 'short', hour: '2-digit', minute: '2-digit',
+    hour12: false, timeZoneName: 'short',
+  }).formatToParts(date);
+
+// EDT = 서머타임 적용 중 / EST = 표준시
+const isUSDST = () =>
+  getETTimeParts().find(p => p.type === 'timeZoneName')?.value === 'EDT';
+
+// NYSE/NASDAQ 정규장: ET 기준 09:30 ~ 16:00 (평일)
+const isUSMarketOpen = () => {
+  const parts = getETTimeParts();
+  const get = (t) => parts.find(p => p.type === t)?.value;
+  if (get('weekday') === 'Sat' || get('weekday') === 'Sun') return false;
+  const totalMin = parseInt(get('hour') || '0', 10) * 60 + parseInt(get('minute') || '0', 10);
+  return totalMin >= 9 * 60 + 30 && totalMin < 16 * 60;
+};
+
+// ─────────────────────────────────────────
 // 공통 헬퍼: 매수 주문 실행
 // ─────────────────────────────────────────
 const executeBuy = async (ticker, weight, currentPrice, market, strategyTag) => {
@@ -79,6 +104,12 @@ const sellVBPositions = async () => {
 // ─────────────────────────────────────────
 const runScanner = async (market) => {
   console.log(`\n🤖 [${market} 스캐너 가동] ${new Date().toLocaleString()} 분석 시작...`);
+
+  // 미장은 개장 시간 외 스캔 방지
+  if (market === 'US' && !isUSMarketOpen()) {
+    console.log(`🇺🇸 미국 시장 미개장 시간 — 스캔 건너뜀 (DST: ${isUSDST() ? 'ON(EDT)' : 'OFF(EST)'})`);
+    return;
+  }
 
   try {
     await getValidToken();
@@ -186,6 +217,7 @@ bot.onText(/\/scan/i, async (msg) => {
 // 크론 스케줄
 // ─────────────────────────────────────────
 console.log('🤖 자동매매 봇 서버가 시작되었습니다.');
+console.log(`🕐 현재 미국 시간대: ${isUSDST() ? 'EDT (서머타임 적용 중)' : 'EST (표준시)'} | 시장 개장: ${isUSMarketOpen() ? '✅ 개장 중' : '❌ 미개장'}`);
 
 // 🇰🇷 VB 전략 준비: 08:55 캐시 초기화 → 09:01 VB 포지션 아침 청산
 cron.schedule('55 8 * * 1-5', () => clearDailyCache(), { timezone: 'Asia/Seoul' });
@@ -195,5 +227,6 @@ cron.schedule('1 9 * * 1-5', () => sellVBPositions(), { timezone: 'Asia/Seoul' }
 cron.schedule('5,35 9-14 * * 1-5', () => runScanner('KR'), { timezone: 'Asia/Seoul' });
 cron.schedule('15 15 * * 1-5', () => runScanner('KR'), { timezone: 'Asia/Seoul' });
 
-// 🇺🇸 미국 시장 (서머타임 미고려 기준 23:35 ~ 05:35)
-cron.schedule('35 23,0-5 * * 1-5', () => runScanner('US'), { timezone: 'Asia/Seoul' });
+// 🇺🇸 미국 시장 — 서머타임(22:30 KST 개장)·표준시(23:30 KST 개장) 모두 커버
+// isUSMarketOpen() 체크로 미개장 시간 자동 필터링되므로 크론은 넓게 설정
+cron.schedule('35 22,23,0-6 * * 1-5', () => runScanner('US'), { timezone: 'Asia/Seoul' });
